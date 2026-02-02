@@ -8,8 +8,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple
 
+from frame.logging import get_logger
+
 if TYPE_CHECKING:
     from frame.backends.base import Backend
+    from frame.calendar import Calendar
 
 CacheMode = Literal["l", "a", "r", "w"]
 ChunkGranularity = Literal["day", "week", "month", "year"]
@@ -43,7 +46,10 @@ class CacheManager:
         chunk_granularity: ChunkGranularity = "month",
         read_workers: int | None = None,
         fetch_workers: int | None = 1,
+        calendar: "Calendar | None" = None,
     ):
+        from frame.calendar import BDateCalendar
+
         self._func = func
         self._kwargs = kwargs
         self._backend = backend
@@ -52,11 +58,23 @@ class CacheManager:
         self._parent_cache_dirs = parent_cache_dirs or []
         self._read_workers = read_workers  # None = ThreadPoolExecutor default (high)
         self._fetch_workers = fetch_workers  # Default 1 = sequential (safe for APIs)
+        self._calendar = calendar or BDateCalendar()
         self._cache_key = self._compute_cache_key()
         self._chunk_dir = self._cache_dir / self._cache_key
         self._parent_chunk_dirs = [
             parent / self._cache_key for parent in self._parent_cache_dirs
         ]
+        self._log = get_logger(__name__).bind(
+            cache_key=self._cache_key,
+            func_name=self._func.__name__,
+        )
+        self._log.info(
+            "cache_manager_initialized",
+            cache_dir=str(self._cache_dir),
+            granularity=self._chunk_granularity,
+            read_workers=self._read_workers,
+            fetch_workers=self._fetch_workers,
+        )
 
     def _compute_cache_key(self) -> str:
         """Compute a stable hash key from function name and kwargs."""
@@ -164,26 +182,20 @@ class CacheManager:
     def _chunk_path_for_dir(self, chunk_dir: Path, dt: datetime) -> Path:
         """Get the parquet file path for a chunk in a specific directory."""
         if self._chunk_granularity == "day":
-            return chunk_dir / f"{dt.year}/{dt.month:02d}/{dt.day:02d}.parquet"
+            return chunk_dir / f"{dt.year}/{dt.month:02d}/{dt.day:02d}.prq"
         elif self._chunk_granularity == "week":
             week = dt.isocalendar()[1]
-            return chunk_dir / f"{dt.year}/W{week:02d}.parquet"
+            return chunk_dir / f"{dt.year}/W{week:02d}.prq"
         elif self._chunk_granularity == "month":
-            return chunk_dir / f"{dt.year}/{dt.month:02d}.parquet"
+            return chunk_dir / f"{dt.year}/{dt.month:02d}.prq"
         elif self._chunk_granularity == "year":
-            return chunk_dir / f"{dt.year}.parquet"
+            return chunk_dir / f"{dt.year}.prq"
         else:
             raise ValueError(f"Unknown chunk granularity: {self._chunk_granularity}")
 
     def _dates_in_range(self, start: datetime, end: datetime) -> set[date]:
-        """Get all dates in a range as a set."""
-        dates = set()
-        current = start.date()
-        end_date = end.date()
-        while current <= end_date:
-            dates.add(current)
-            current = current + timedelta(days=1)
-        return dates
+        """Get all valid dates in a range as a set."""
+        return set(self._calendar.dt_range(start, end))
 
     def _get_dates_in_chunk(self, path: Path) -> set[date]:
         """Extract unique dates from cached chunk's as_of_date column/index."""
@@ -290,12 +302,19 @@ class CacheManager:
             found_dates = remaining_dates & chunk_dates
 
             if found_dates:
+                level = "primary" if cache_dir == self._chunk_dir else "parent"
+                self._log.debug(
+                    "cache_hit_at_level", level=level, found_count=len(found_dates)
+                )
                 # Read the full chunk then filter to dates we need
                 df = self._backend.read_parquet(chunk_path, columns=columns, filters=filters)
                 df = self._filter_to_dates(df, found_dates)
                 if not self._backend.is_empty(df):
                     frames.append(df)
                 remaining_dates -= found_dates
+            else:
+                level = "primary" if cache_dir == self._chunk_dir else "parent"
+                self._log.debug("cache_miss_at_level", level=level)
 
             if not remaining_dates:
                 break  # All dates found
@@ -320,6 +339,12 @@ class CacheManager:
         # Fetch live data for the date range
         min_date = min(dates)
         max_date = max(dates)
+        self._log.info(
+            "fetching_live_data",
+            date_count=len(dates),
+            min_date=str(min_date),
+            max_date=str(max_date),
+        )
         data = self._func(
             datetime.combine(min_date, datetime.min.time()),
             datetime.combine(max_date, datetime.max.time().replace(microsecond=999999)),
@@ -348,6 +373,7 @@ class CacheManager:
         else:
             self._backend.to_parquet(data, chunk_path)
 
+        self._log.debug("cache_chunk_written", chunk_path=str(chunk_path))
         return data
 
     def has_chunk(self, chunk_start: datetime, chunk_end: datetime) -> bool:
@@ -379,12 +405,14 @@ class CacheManager:
         # Check primary first
         chunk_path = self._chunk_path(chunk_start)
         if chunk_path.exists():
+            self._log.debug("reading_chunk", chunk_path=str(chunk_path), source="primary")
             return self._backend.read_parquet(chunk_path, columns=columns, filters=filters)
 
         # Check parents
         for parent_dir in self._parent_chunk_dirs:
             parent_path = self._chunk_path_for_dir(parent_dir, chunk_start)
             if parent_path.exists():
+                self._log.debug("reading_chunk", chunk_path=str(parent_path), source="parent")
                 return self._backend.read_parquet(
                     parent_path, columns=columns, filters=filters
                 )
@@ -394,6 +422,7 @@ class CacheManager:
     def write_chunk(self, df, chunk_start: datetime, chunk_end: datetime) -> None:
         """Write a chunk to primary cache."""
         path = self._chunk_path(chunk_start)
+        self._log.debug("writing_chunk", chunk_path=str(path))
         self._backend.to_parquet(df, path)
 
     def fetch_and_cache_chunk(
@@ -421,6 +450,28 @@ class CacheManager:
             return self.read_chunk(chunk_start, chunk_end, columns=columns, filters=filters)
         return data
 
+    def _fetch_and_write_chunk(
+        self,
+        chunk_start: datetime,
+        chunk_end: datetime,
+        columns: list[str] | None = None,
+        filters: list[tuple] | None = None,
+    ):
+        """Fetch data for a chunk and overwrite cache (for write mode).
+
+        Used by concurrent write mode to fetch and cache chunks in parallel.
+        """
+        self._log.info(
+            "fetching_chunk_for_write",
+            chunk_start=chunk_start.isoformat(),
+            chunk_end=chunk_end.isoformat(),
+        )
+        data = self._func(chunk_start, chunk_end, **self._kwargs)
+        if not self._backend.is_empty(data):
+            self.write_chunk(data, chunk_start, chunk_end)
+            return self.read_chunk(chunk_start, chunk_end, columns=columns, filters=filters)
+        return data
+
     def get_data(
         self,
         start: datetime,
@@ -445,6 +496,12 @@ class CacheManager:
         Returns:
             DataFrame with the requested data, optionally filtered.
         """
+        self._log.info(
+            "get_data_started",
+            start=start.isoformat(),
+            end=end.isoformat(),
+            cache_mode=cache_mode,
+        )
         # Handle live mode - bypass cache entirely
         if cache_mode == "l":
             data = self._func(start, end, **self._kwargs)
@@ -457,6 +514,7 @@ class CacheManager:
             return self._backend.filter_date_range(data, start, end)
 
         chunks = self.get_chunk_ranges(start, end)
+        self._log.debug("chunks_computed", chunk_count=len(chunks))
 
         # Single chunk: use sequential (no threading overhead)
         if len(chunks) == 1:
@@ -480,8 +538,11 @@ class CacheManager:
     ):
         """Original sequential chunk processing."""
         frames = []
+        cache_hits = 0
+        cache_misses = 0
 
-        for chunk_start, chunk_end in chunks:
+        for i, (chunk_start, chunk_end) in enumerate(chunks):
+            self._log.debug("processing_chunk", chunk_index=i, cache_mode=cache_mode)
             effective_start = max(start, chunk_start)
             effective_end = min(end, chunk_end)
             requested_dates = self._dates_in_range(effective_start, effective_end)
@@ -507,6 +568,7 @@ class CacheManager:
                 )
 
                 if missing_dates:
+                    cache_misses += 1
                     if cache_mode == "r":
                         raise CacheMissError(
                             f"Missing dates {sorted(missing_dates)} not found in cache"
@@ -525,9 +587,15 @@ class CacheManager:
                             df = self._backend.concat([df, live_df])
                         else:
                             df = live_df
+                else:
+                    cache_hits += 1
 
             if not self._backend.is_empty(df):
                 frames.append(df)
+
+        self._log.info(
+            "sequential_complete", cache_hits=cache_hits, cache_misses=cache_misses
+        )
 
         if not frames:
             return self._backend.empty()
@@ -545,15 +613,41 @@ class CacheManager:
         cache_mode: CacheMode,
     ):
         """Get data with concurrent chunk reading and fetching."""
-        # Handle write mode: always fetch and cache (use sequential)
-        if cache_mode == "w":
-            return self._get_data_sequential(
-                chunks, start, end, columns, filters, cache_mode
-            )
-
         frames = []
 
+        # Handle write mode: concurrent fetch and overwrite all chunks
+        if cache_mode == "w":
+            self._log.debug("concurrent_write_mode", chunk_count=len(chunks))
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self._fetch_workers
+            ) as executor:
+                futures = {}
+                for chunk_start, chunk_end in chunks:
+                    future = executor.submit(
+                        self._fetch_and_write_chunk,
+                        chunk_start,
+                        chunk_end,
+                        columns,
+                        filters,
+                    )
+                    futures[future] = (chunk_start, chunk_end)
+
+                for future in concurrent.futures.as_completed(futures):
+                    df = future.result()
+                    if not self._backend.is_empty(df):
+                        frames.append(df)
+
+            self._log.info("concurrent_write_complete", chunks_written=len(chunks))
+
+            if not frames:
+                return self._backend.empty()
+
+            result = self._backend.concat(frames)
+            result = self._backend.sort_by_date(result)
+            return self._backend.filter_date_range(result, start, end)
+
         # Phase 1: Concurrent initial read of all chunks (uses read_workers)
+        self._log.debug("concurrent_phase1_read", chunk_count=len(chunks))
         chunk_results: list[ChunkResult] = []
 
         with concurrent.futures.ThreadPoolExecutor(
@@ -579,6 +673,9 @@ class CacheManager:
 
         # Phase 2: Handle missing dates
         chunks_needing_fetch = [r for r in chunk_results if r.missing_dates]
+        self._log.debug(
+            "concurrent_phase2_fetch", chunks_needing_fetch=len(chunks_needing_fetch)
+        )
 
         if chunks_needing_fetch:
             if cache_mode == "r":
@@ -634,6 +731,12 @@ class CacheManager:
                 df = future.result()
                 if not self._backend.is_empty(df):
                     frames.append(df)
+
+        cache_count = len(chunk_results) - len(chunks_needing_fetch)
+        fetch_count = len(chunks_needing_fetch)
+        self._log.info(
+            "concurrent_complete", chunks_from_cache=cache_count, chunks_fetched=fetch_count
+        )
 
         if not frames:
             return self._backend.empty()

@@ -6,6 +6,7 @@ dependencies = [
     "pandas>=2.0",
     "polars>=0.20",
     "pyarrow>=14.0",
+    "structlog>=24.0",
 ]
 
 [project.optional-dependencies]

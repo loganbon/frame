@@ -3,7 +3,9 @@
 from frame.backends.pandas import PandasBackend
 from frame.backends.polars import PolarsBackend
 from frame.cache import CacheManager, CacheMissError, CacheMode, ChunkGranularity
+from frame.calendar import BDateCalendar, Calendar, DateCalendar
 from frame.core import Frame
+from frame.logging import configure_logging, get_logger
 from frame.ops import (
     Abs,
     Add,
@@ -39,6 +41,11 @@ __all__ = [
     "CacheMissError",
     "CacheMode",
     "ChunkGranularity",
+    "Calendar",
+    "BDateCalendar",
+    "DateCalendar",
+    "configure_logging",
+    "get_logger",
     *ops_all,
 ]
 __version__ = "0.1.0"

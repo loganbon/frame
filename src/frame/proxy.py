@@ -1,13 +1,17 @@
 """LazyFrame and LazyOperation proxies for nested frame batching."""
 
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 from frame.executor import get_current_batch
+from frame.logging import get_logger
 
 if TYPE_CHECKING:
     from frame.core import Frame
     from frame.ops.base import Operation
+
+_log = get_logger(__name__)
 
 
 class _LazyMixins:
@@ -149,6 +153,10 @@ class LazyFrame(_LazyMixins):
         """Fetch data if not already resolved."""
         if not self._resolved:
             if self._data is None:
+                _log.debug(
+                    "lazy_frame_resolving", frame_func=self._frame._func.__name__
+                )
+                start_time = time.perf_counter()
                 self._data = self._frame._fetch_data(
                     self._start,
                     self._end,
@@ -156,6 +164,8 @@ class LazyFrame(_LazyMixins):
                     filters=self._filters,
                     cache_mode=self._cache_mode,
                 )
+                elapsed_ms = (time.perf_counter() - start_time) * 1000
+                _log.debug("lazy_frame_resolved", elapsed_ms=round(elapsed_ms, 2))
             self._resolved = True
         return self._data
 
@@ -195,6 +205,10 @@ class LazyOperation(_LazyMixins):
         """Resolve by applying operation to already-resolved inputs."""
         if not self._resolved:
             if self._data is None:
+                _log.debug(
+                    "lazy_operation_resolving",
+                    operation=self._operation.__class__.__name__,
+                )
                 resolved_inputs = [
                     li._resolve() if hasattr(li, "_resolve") else li
                     for li in self._input_lazies

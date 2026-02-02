@@ -5,6 +5,7 @@ Provides declarative transformations on Frames while preserving concurrent data 
 
 from frame.ops.base import Operation
 from frame.ops.binary import Add, Div, Mul, Pow, Sub
+from frame.ops.concat import Concat
 from frame.ops.conversion import ToPandas, ToPolars
 from frame.ops.unary import (
     Abs,
@@ -40,6 +41,8 @@ __all__ = [
     "Mul",
     "Div",
     "Pow",
+    # Multi-input operations
+    "Concat",
     # Conversion operations
     "ToPandas",
     "ToPolars",

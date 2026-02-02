@@ -6,8 +6,12 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from frame.logging import get_logger
+
 if TYPE_CHECKING:
     from frame.proxy import LazyFrame, LazyOperation
+
+_log = get_logger(__name__)
 
 # Context variable to track pending frame requests during execution
 _current_batch: contextvars.ContextVar[list | None] = contextvars.ContextVar(
@@ -68,6 +72,8 @@ def resolve_batch_sync(batch: list) -> None:
     if not batch:
         return
 
+    _log.debug("resolving_batch", batch_size=len(batch))
+
     # Build dependency map: item -> set of items it depends on (within batch)
     batch_set = set(batch)
     deps: dict[Any, set] = {}
@@ -80,8 +86,10 @@ def resolve_batch_sync(batch: list) -> None:
             deps[item] = set()
 
     resolved: set = set()
+    round_num = 0
 
     while len(resolved) < len(batch):
+        round_num += 1
         # Find items whose dependencies are all resolved
         ready = [
             item
@@ -91,6 +99,8 @@ def resolve_batch_sync(batch: list) -> None:
 
         if not ready:
             raise RuntimeError("Circular dependency detected in batch")
+
+        _log.debug("batch_resolution_round", round=round_num, ready_count=len(ready))
 
         # Resolve ready items in parallel
         with ThreadPoolExecutor() as pool:
@@ -107,6 +117,8 @@ def resolve_batch_sync(batch: list) -> None:
                 item._resolved = True
 
         resolved.update(ready)
+
+    _log.debug("batch_resolution_complete", total_rounds=round_num)
 
 
 async def resolve_batch_async(batch: list) -> None:
@@ -161,6 +173,7 @@ def execute_with_batching(
     func, start_dt: datetime, end_dt: datetime, kwargs: dict
 ) -> Any:
     """Execute function with batch tracking for nested Frame calls."""
+    _log.debug("batch_context_created")
     batch: list = []
     token = set_batch_context(batch)
 

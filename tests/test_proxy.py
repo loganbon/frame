@@ -202,7 +202,9 @@ class TestAsyncNestedFrames:
         """Test async API with nested frames."""
         import asyncio
 
-        prices = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        from frame import DateCalendar
+
+        prices = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir, calendar=DateCalendar())
 
         start = datetime(2024, 1, 1)
         end = datetime(2024, 1, 5)

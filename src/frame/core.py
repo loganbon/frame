@@ -2,18 +2,23 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from frame.backends.pandas import PandasBackend
 from frame.backends.polars import PolarsBackend
 from frame.cache import CacheManager, CacheMode, ChunkGranularity
+from frame.calendar import BDateCalendar, Calendar
 from frame.executor import (
     execute_with_batching,
     execute_with_batching_async,
     get_current_batch,
 )
+from frame.logging import get_logger
 from frame.mixins import APIMixin
 from frame.proxy import LazyFrame
+
+if TYPE_CHECKING:
+    from frame.ops.concat import Concat
 
 
 class Frame(APIMixin):
@@ -34,6 +39,7 @@ class Frame(APIMixin):
         chunk_granularity: ChunkGranularity = "month",
         read_workers: int | None = None,
         fetch_workers: int | None = 1,
+        calendar: Calendar | None = None,
     ) -> None:
         """Initialize a Frame.
 
@@ -52,6 +58,8 @@ class Frame(APIMixin):
             fetch_workers: Concurrency for live data fetches.
                 1 (default) is sequential, safe for rate-limited APIs.
                 Set higher (2-4) for APIs that support parallel requests.
+            calendar: Calendar for determining valid dates. Defaults to
+                BDateCalendar (business dates, excludes weekends).
         """
         self._func = func
         self._kwargs = kwargs or {}
@@ -59,6 +67,7 @@ class Frame(APIMixin):
         self._chunk_granularity = chunk_granularity
         self._read_workers = read_workers
         self._fetch_workers = fetch_workers
+        self._calendar = calendar or BDateCalendar()
 
         if backend == "pandas":
             self._backend = PandasBackend()
@@ -84,8 +93,15 @@ class Frame(APIMixin):
             chunk_granularity=self._chunk_granularity,
             read_workers=self._read_workers,
             fetch_workers=self._fetch_workers,
+            calendar=self._calendar,
         )
         self._cache_key = self._cache._cache_key
+        self._log = get_logger(__name__).bind(
+            frame_func=self._func.__name__, cache_key=self._cache_key
+        )
+        self._log.info(
+            "frame_created", backend=self._backend_name, cache_dir=str(self._cache_dir)
+        )
 
     def _fetch_data(
         self,
@@ -137,8 +153,15 @@ class Frame(APIMixin):
         Returns:
             DataFrame (or LazyFrame proxy if nested).
         """
+        self._log.info(
+            "get_range_called",
+            start=start_dt.isoformat(),
+            end=end_dt.isoformat(),
+            cache_mode=cache_mode,
+        )
         batch = get_current_batch()
         if batch is not None:
+            self._log.debug("returning_lazy_frame")
             return LazyFrame(
                 self,
                 start_dt,
@@ -271,3 +294,34 @@ class Frame(APIMixin):
             f"backend={self._backend_name}, "
             f"cache_key={self._cache_key})"
         )
+
+    @staticmethod
+    def concat(frames: list["Frame | APIMixin"]) -> "Concat":
+        """Create a Concat operation that combines multiple frames.
+
+        Returns an Operation that, when get_range is called, fetches all
+        input frames in parallel (via batching) and concatenates the results.
+
+        Args:
+            frames: List of Frame or Operation objects to concatenate.
+
+        Returns:
+            Concat operation that can be used like any other Frame/Operation.
+
+        Example:
+            prices = Frame(fetch_prices, {"ticker": "AAPL"})
+            volumes = Frame(fetch_volumes, {"ticker": "AAPL"})
+
+            # Create concat operation
+            combined = Frame.concat([prices, volumes])
+
+            # Fetch data (frames are fetched in parallel)
+            result = combined.get_range(start, end)
+
+            # Can be chained with other operations
+            scaled = Frame.concat([prices, volumes]) * 2
+            result = scaled.get_range(start, end)
+        """
+        from frame.ops.concat import Concat
+
+        return Concat(*frames)
