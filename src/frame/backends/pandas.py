@@ -40,9 +40,18 @@ class PandasBackend:
         return df
 
     def to_parquet(self, df: pd.DataFrame, path: Path) -> None:
-        """Write DataFrame to parquet file."""
+        """Write DataFrame to parquet file.
+
+        Resets index before saving so as_of_date and id are stored as columns.
+        This allows efficient column selection when reading.
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_parquet(path)
+        # Reset index so as_of_date/id are columns, not index
+        if isinstance(df.index, pd.MultiIndex):
+            df = df.reset_index()
+        elif df.index.name is not None:
+            df = df.reset_index()
+        df.to_parquet(path, index=False)
 
     def read_parquet(
         self,
@@ -57,8 +66,14 @@ class PandasBackend:
             columns: List of column names to read. If None, reads all columns.
             filters: List of (column, operator, value) tuples for row filtering.
                 Uses pyarrow filter format. Operators: =, !=, <, <=, >, >=, in, not in
+
+        Restores MultiIndex from as_of_date and id columns if they exist.
         """
-        return pd.read_parquet(path, columns=columns, filters=filters)
+        df = pd.read_parquet(path, columns=columns, filters=filters)
+        # Restore MultiIndex if as_of_date and id columns exist
+        if "as_of_date" in df.columns and "id" in df.columns:
+            df = df.set_index(["as_of_date", "id"])
+        return df
 
     def get_date_range(self, df: pd.DataFrame) -> tuple[datetime, datetime]:
         """Get the min and max dates from the DataFrame's as_of_date index level."""

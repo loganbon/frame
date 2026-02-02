@@ -2,10 +2,22 @@
 
 from typing import TYPE_CHECKING, Any
 
+import pandas as pd
+
 from frame.ops.base import Operation
 
 if TYPE_CHECKING:
     from frame.core import Frame
+
+
+def _is_polars(df: Any) -> bool:
+    """Check if DataFrame is a polars DataFrame."""
+    return hasattr(df, "lazy")
+
+
+def _is_pandas(df: Any) -> bool:
+    """Check if DataFrame is a pandas DataFrame."""
+    return isinstance(df, pd.DataFrame)
 
 
 class Rolling(Operation):
@@ -39,8 +51,26 @@ class Rolling(Operation):
         min_periods: int | None,
     ) -> Any:
         df = inputs[0]
-        rolling = df.rolling(window, min_periods=min_periods or window)
-        return getattr(rolling, func)()
+        min_p = min_periods or window
+
+        if _is_polars(df):
+            import polars as pl
+
+            return df.with_columns(
+                pl.all().rolling_mean(window) if func == "mean"
+                else pl.all().rolling_sum(window) if func == "sum"
+                else pl.all().rolling_std(window) if func == "std"
+                else pl.all().rolling_min(window) if func == "min"
+                else pl.all().rolling_max(window) if func == "max"
+                else pl.all()
+            )
+        else:
+            # Pandas with MultiIndex [as_of_date, id] - group by id level
+            rolling = df.groupby(level="id", group_keys=False).rolling(
+                window, min_periods=min_p
+            )
+            result = getattr(rolling, func)()
+            return result.droplevel(0)
 
 
 class Shift(Operation):
@@ -60,7 +90,15 @@ class Shift(Operation):
         super().__init__(frame, periods=periods)
 
     def _apply(self, inputs: list[Any], periods: int) -> Any:
-        return inputs[0].shift(periods)
+        df = inputs[0]
+
+        if _is_polars(df):
+            import polars as pl
+
+            return df.with_columns(pl.all().shift(periods))
+        else:
+            # Pandas with MultiIndex [as_of_date, id] - group by id level
+            return df.groupby(level="id", group_keys=False).shift(periods)
 
 
 class Diff(Operation):
@@ -79,7 +117,15 @@ class Diff(Operation):
         super().__init__(frame, periods=periods)
 
     def _apply(self, inputs: list[Any], periods: int) -> Any:
-        return inputs[0].diff(periods)
+        df = inputs[0]
+
+        if _is_polars(df):
+            import polars as pl
+
+            return df.with_columns(pl.all().diff(periods))
+        else:
+            # Pandas with MultiIndex [as_of_date, id] - group by id level
+            return df.groupby(level="id", group_keys=False).diff(periods)
 
 
 class Abs(Operation):
@@ -113,7 +159,15 @@ class Pct(Operation):
         super().__init__(frame, periods=periods)
 
     def _apply(self, inputs: list[Any], periods: int) -> Any:
-        return inputs[0].pct_change(periods)
+        df = inputs[0]
+
+        if _is_polars(df):
+            import polars as pl
+
+            return df.with_columns(pl.all().pct_change(periods))
+        else:
+            # Pandas with MultiIndex [as_of_date, id] - group by id level
+            return df.groupby(level="id", group_keys=False).pct_change(periods)
 
 
 class Select(Operation):
@@ -163,10 +217,22 @@ class Zscore(Operation):
     ) -> Any:
         df = inputs[0]
         min_p = min_periods or window
-        rolling = df.rolling(window, min_periods=min_p)
-        mean = rolling.mean()
-        std = rolling.std()
-        return (df - mean) / std
+
+        if _is_polars(df):
+            import polars as pl
+
+            return df.with_columns(
+                (pl.all() - pl.all().rolling_mean(window))
+                / pl.all().rolling_std(window)
+            )
+        else:
+            # Pandas with MultiIndex [as_of_date, id] - group by id level
+            grouped = df.groupby(level="id", group_keys=False)
+            rolling = grouped.rolling(window, min_periods=min_p)
+            # groupby().rolling() adds an extra 'id' level at position 0, drop it
+            mean = rolling.mean().droplevel(0)
+            std = rolling.std().droplevel(0)
+            return (df - mean) / std
 
 
 class Clip(Operation):
@@ -226,25 +292,32 @@ class Winsorize(Operation):
 
     def _apply(self, inputs: list[Any], lower: float, upper: float) -> Any:
         df = inputs[0]
-        # Detect backend
-        if hasattr(df, "lazy"):
-            # Polars
+
+        if _is_polars(df):
             import polars as pl
 
             result = df.clone()
             for col in df.columns:
-                if df[col].dtype in (pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32, pl.Int64):
+                if df[col].dtype in (
+                    pl.Float32,
+                    pl.Float64,
+                    pl.Int8,
+                    pl.Int16,
+                    pl.Int32,
+                    pl.Int64,
+                ):
                     lower_val = df[col].quantile(lower)
                     upper_val = df[col].quantile(upper)
                     result = result.with_columns(pl.col(col).clip(lower_val, upper_val))
             return result
         else:
-            # Pandas
+            # Pandas with MultiIndex [as_of_date, id] - group by id level
             result = df.copy()
             for col in df.select_dtypes(include=["number"]).columns:
-                lower_val = df[col].quantile(lower)
-                upper_val = df[col].quantile(upper)
-                result[col] = df[col].clip(lower=lower_val, upper=upper_val)
+                grouped = df.groupby(level="id")[col]
+                lower_q = grouped.transform(lambda x: x.quantile(lower))
+                upper_q = grouped.transform(lambda x: x.quantile(upper))
+                result[col] = df[col].clip(lower=lower_q, upper=upper_q)
             return result
 
 
@@ -280,17 +353,22 @@ class Fillna(Operation):
         self, inputs: list[Any], value: float | None, method: str | None
     ) -> Any:
         df = inputs[0]
+
         if value is not None:
             return df.fillna(value)
-        elif method == "ffill":
-            # Works for both pandas and polars (polars uses forward_fill)
-            if hasattr(df, "lazy"):
+
+        if _is_polars(df):
+            if method == "ffill":
                 return df.fill_null(strategy="forward")
-            return df.ffill()
-        elif method == "bfill":
-            if hasattr(df, "lazy"):
+            elif method == "bfill":
                 return df.fill_null(strategy="backward")
-            return df.bfill()
+        else:
+            # Pandas with MultiIndex [as_of_date, id] - group by id level
+            if method == "ffill":
+                return df.groupby(level="id", group_keys=False).ffill()
+            elif method == "bfill":
+                return df.groupby(level="id", group_keys=False).bfill()
+
         return df
 
 
@@ -318,8 +396,7 @@ class Filter(Operation):
 
         Detects the backend by checking for polars-specific attributes.
         """
-        # Polars DataFrames have a 'filter' method that takes expressions
-        if hasattr(df, "filter") and hasattr(df, "lazy"):
+        if _is_polars(df):
             from frame.backends.polars import _build_polars_filter
 
             expr = _build_polars_filter(col, op, val)

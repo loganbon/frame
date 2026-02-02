@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple
 
 from frame.logging import get_logger
 from frame.memory_cache import get_memory_cache
+from frame.validation import validate_dataframe
 
 if TYPE_CHECKING:
     from frame.backends.base import Backend
@@ -83,7 +84,10 @@ class CacheManager:
         The name is the function's __name__ attribute.
         The cache_id is a 16-char hash of the serialized kwargs.
         """
-        name = self._func.__name__
+        if hasattr(self, "__class__") and self.__class__.__name__ != "Frame":
+            name = self.__class__.__name__
+        else:
+            name = self._func.__name__
 
         # Hash only the kwargs (with Frames converted to their cache keys)
         kwargs_data = self._serialize_kwargs(self._kwargs)
@@ -98,6 +102,9 @@ class CacheManager:
         for key, value in kwargs.items():
             if hasattr(value, "__class__") and value.__class__.__name__ == "Frame":
                 result[key] = f"Frame({value._cache_key})"
+            elif hasattr(value, "_cache_key"):
+                # Operations and other objects with cache keys
+                result[key] = f"{value.__class__.__name__}({value._cache_key})"
             elif callable(value):
                 result[key] = f"callable({value.__name__})"
             else:
@@ -191,13 +198,8 @@ class CacheManager:
         """Get all valid dates in a range as a set."""
         return set(self._calendar.dt_range(start, end))
 
-    def _get_dates_in_chunk(self, path: Path) -> set[date]:
-        """Extract unique dates from cached chunk's as_of_date column/index."""
-        try:
-            df = self._backend.read_parquet(path)
-        except Exception:
-            return set()
-
+    def _get_dates_in_df(self, df: Any) -> set[date]:
+        """Extract unique dates from DataFrame's as_of_date column/index."""
         if self._backend.is_empty(df):
             return set()
 
@@ -248,22 +250,30 @@ class CacheManager:
 
         return df
 
-    def _deduplicate_by_date(self, df: Any) -> Any:
-        """Remove duplicate rows for the same date, keeping the last occurrence."""
-        if self._backend.is_empty(df):
+    def _filter_out_dates(self, df: Any, dates: set[date]) -> Any:
+        """Filter DataFrame to exclude rows with dates in the given set."""
+        if self._backend.is_empty(df) or not dates:
             return df
 
-        # Handle pandas
+        # Handle pandas (MultiIndex)
         if hasattr(df, "index") and hasattr(df.index, "names"):
             if "as_of_date" in df.index.names:
-                return df[~df.index.duplicated(keep="last")]
+                import pandas as pd
 
-        # Handle polars
+                idx_dates = df.index.get_level_values("as_of_date")
+                mask = pd.Series(
+                    [d.date() if hasattr(d, "date") else d for d in idx_dates]
+                ).isin(dates)
+                return df[~mask.values]
+
+        # Handle polars (column)
         if hasattr(df, "columns") and "as_of_date" in (
             df.columns if hasattr(df.columns, "__iter__") else []
         ):
-            # Get all columns that should be used for deduplication
-            return df.unique(maintain_order=True)
+            import polars as pl
+
+            date_list = list(dates)
+            return df.filter(~pl.col("as_of_date").dt.date().is_in(date_list))
 
         return df
 
@@ -291,23 +301,26 @@ class CacheManager:
             if not chunk_path.exists():
                 continue
 
-            # Read chunk and find which dates it has
-            chunk_dates = self._get_dates_in_chunk(chunk_path)
+            level = "primary" if cache_dir == self._chunk_dir else "parent"
+
+            # Read chunk once, then extract dates from loaded data
+            df = self._backend.read_parquet(chunk_path, columns=columns, filters=filters)
+            if self._backend.is_empty(df):
+                self._log.debug("cache_miss_at_level", level=level)
+                continue
+
+            chunk_dates = self._get_dates_in_df(df)
             found_dates = remaining_dates & chunk_dates
 
             if found_dates:
-                level = "primary" if cache_dir == self._chunk_dir else "parent"
                 self._log.debug(
                     "cache_hit_at_level", level=level, found_count=len(found_dates)
                 )
-                # Read the full chunk then filter to dates we need
-                df = self._backend.read_parquet(chunk_path, columns=columns, filters=filters)
                 df = self._filter_to_dates(df, found_dates)
                 if not self._backend.is_empty(df):
                     frames.append(df)
                 remaining_dates -= found_dates
             else:
-                level = "primary" if cache_dir == self._chunk_dir else "parent"
                 self._log.debug("cache_miss_at_level", level=level)
 
             if not remaining_dates:
@@ -352,14 +365,22 @@ class CacheManager:
         data = self._filter_to_dates(data, dates)
 
         # Merge with existing primary cache chunk
+        # For each date in new data, we replace ALL rows for that date
+        # This ensures each date's data comes from a single source
         chunk_path = self._chunk_path(chunk_start)
         memory_cache = get_memory_cache()
+        new_dates = self._get_dates_in_df(data)
+
         if chunk_path.exists():
             try:
                 existing = self._backend.read_parquet(chunk_path)
                 if not self._backend.is_empty(existing):
-                    merged = self._backend.concat([existing, data])
-                    merged = self._deduplicate_by_date(merged)
+                    # Remove all rows for dates that are in new data
+                    existing_filtered = self._filter_out_dates(existing, new_dates)
+                    if not self._backend.is_empty(existing_filtered):
+                        merged = self._backend.concat([existing_filtered, data])
+                    else:
+                        merged = data
                     self._backend.to_parquet(merged, chunk_path)
                 else:
                     self._backend.to_parquet(data, chunk_path)
@@ -445,6 +466,7 @@ class CacheManager:
 
     def write_chunk(self, df, chunk_start: datetime, chunk_end: datetime) -> None:
         """Write a chunk to primary cache."""
+        validate_dataframe(df)
         path = self._chunk_path(chunk_start)
         self._log.debug("writing_chunk", chunk_path=str(path))
         self._backend.to_parquet(df, path)

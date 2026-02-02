@@ -152,6 +152,13 @@ class Operation(APIMixin):
         key_str = json.dumps(key_data, sort_keys=True, default=str)
         return hashlib.sha256(key_str.encode()).hexdigest()[:16]
 
+    @property
+    def _cache_key(self) -> str:
+        """Stable cache key for this operation."""
+        if not hasattr(self, "_cached_cache_key"):
+            self._cached_cache_key = self._compute_cache_key()
+        return self._cached_cache_key
+
     def _serialize_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Serialize params to JSON-compatible format."""
         result = {}

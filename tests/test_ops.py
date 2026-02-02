@@ -2,13 +2,32 @@
 
 import shutil
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
 
-from frame import Frame, Rolling, Shift, Diff, Abs, Pct, Add, Sub, Mul, Div, Pow, Operation, Select, Filter, ToPandas, ToPolars, Zscore, Clip, Winsorize, Fillna
+from frame import (
+    Abs,
+    Add,
+    Clip,
+    Diff,
+    Div,
+    Fillna,
+    Filter,
+    Frame,
+    Mul,
+    Operation,
+    Pct,
+    Pow,
+    Rolling,
+    Select,
+    Shift,
+    Sub,
+    ToPandas,
+    ToPolars,
+    Winsorize,
+    Zscore,
+)
 from frame.proxy import LazyOperation
 
 
@@ -144,9 +163,25 @@ class TestUnaryOperations:
 
         assert isinstance(result, pd.DataFrame)
 
-    def test_zscore(self, prices_frame):
+    def test_zscore(self, cache_dir):
         """Test Zscore operation."""
-        zscore = Zscore(prices_frame, window=3)
+        # Use data that varies over time within each id (needed for meaningful z-score)
+        def fetch_varying_data(start_dt: datetime, end_dt: datetime):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for i, dt in enumerate(dates):
+                for id_ in range(3):
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": float(i + id_),  # Varies over time
+                        "price": 100.0 + i * 10 + id_,
+                    })
+            df = pd.DataFrame(records)
+            return df.set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_varying_data, cache_dir=cache_dir)
+        zscore = Zscore(frame, window=3)
         start = datetime(2024, 1, 1)
         end = datetime(2024, 1, 10)
 

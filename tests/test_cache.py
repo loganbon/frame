@@ -938,3 +938,63 @@ class TestConcurrentChunkOperations:
             frame.get_range(
                 datetime(2024, 1, 1), datetime(2024, 3, 31), cache_mode="r"
             )
+
+
+class TestOperationCacheKey:
+    """Test Operations used as Frame kwargs."""
+
+    def test_operation_as_kwarg_stable_cache_key(self, cache_dir):
+        """Operations passed as kwargs produce stable cache keys."""
+        from frame.ops.unary import Rolling
+
+        def base_fetch(start, end):
+            dates = pd.date_range(start, end, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": 1,
+                    "value": 100.0,
+                })
+            df = pd.DataFrame(records)
+            return df.set_index(["as_of_date", "id"])
+
+        base = Frame(base_fetch, cache_dir=cache_dir)
+        op = Rolling(base, window=5, func="mean")
+
+        def derived_fetch(start, end, source_op):
+            return source_op.get_range(start, end) * 2
+
+        # Create two frames with same operation - should have same cache key
+        f1 = Frame(derived_fetch, {"source_op": op}, cache_dir=cache_dir)
+        f2 = Frame(derived_fetch, {"source_op": op}, cache_dir=cache_dir)
+
+        assert f1._cache_key == f2._cache_key
+
+    def test_different_operations_different_cache_keys(self, cache_dir):
+        """Different operations produce different cache keys."""
+        from frame.ops.unary import Rolling
+
+        def base_fetch(start, end):
+            dates = pd.date_range(start, end, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": 1,
+                    "value": 100.0,
+                })
+            df = pd.DataFrame(records)
+            return df.set_index(["as_of_date", "id"])
+
+        base = Frame(base_fetch, cache_dir=cache_dir)
+        op1 = Rolling(base, window=5, func="mean")
+        op2 = Rolling(base, window=10, func="mean")
+
+        def derived_fetch(start, end, source_op):
+            return source_op.get_range(start, end) * 2
+
+        f1 = Frame(derived_fetch, {"source_op": op1}, cache_dir=cache_dir)
+        f2 = Frame(derived_fetch, {"source_op": op2}, cache_dir=cache_dir)
+
+        assert f1._cache_key != f2._cache_key

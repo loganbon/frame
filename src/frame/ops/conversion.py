@@ -29,7 +29,11 @@ class ToPandas(Operation):
     def _apply(self, inputs: list[Any], **params: Any) -> pd.DataFrame:
         df = inputs[0]
         if hasattr(df, "to_pandas"):
-            return df.to_pandas()
+            result = df.to_pandas()
+            # Set the standard [as_of_date, id] MultiIndex if columns exist
+            if "as_of_date" in result.columns and "id" in result.columns:
+                result = result.set_index(["as_of_date", "id"])
+            return result
         if isinstance(df, pd.DataFrame):
             return df
         raise TypeError(f"Cannot convert {type(df)} to pandas")
