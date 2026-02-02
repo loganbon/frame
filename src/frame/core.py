@@ -8,6 +8,7 @@ from frame.backends.pandas import PandasBackend
 from frame.backends.polars import PolarsBackend
 from frame.cache import CacheManager, CacheMode, ChunkGranularity
 from frame.calendar import BDateCalendar, Calendar
+from frame.config import get_default_cache_dir, get_default_parent_cache_dirs
 from frame.executor import (
     execute_with_batching,
     execute_with_batching_async,
@@ -77,12 +78,15 @@ class Frame(APIMixin):
             raise ValueError(f"Unknown backend: {backend}")
 
         if cache_dir is None:
-            self._cache_dir = Path.cwd() / ".frame_cache"
+            self._cache_dir = get_default_cache_dir()
         else:
             self._cache_dir = Path(cache_dir)
 
-        # Convert parent cache dirs to Path objects
-        self._parent_cache_dirs = [Path(p) for p in (parent_cache_dirs or [])]
+        # Convert parent cache dirs to Path objects, falling back to defaults
+        if parent_cache_dirs is None:
+            self._parent_cache_dirs = get_default_parent_cache_dirs()
+        else:
+            self._parent_cache_dirs = [Path(p) for p in parent_cache_dirs]
 
         self._cache = CacheManager(
             func=self._func,

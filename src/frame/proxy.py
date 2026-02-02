@@ -4,6 +4,7 @@ import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from frame.cache import CacheMode
 from frame.executor import get_current_batch
 from frame.logging import get_logger
 
@@ -134,7 +135,7 @@ class LazyFrame(_LazyMixins):
         end_dt: datetime,
         columns: list[str] | None = None,
         filters: list[tuple] | None = None,
-        cache_mode: str = "a",
+        cache_mode: "CacheMode" = "a",
     ):
         self._frame = frame
         self._start = start_dt

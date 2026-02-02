@@ -97,7 +97,8 @@ class MemoryCache:
                 self._path_locks[path] = threading.RLock()
             return self._path_locks[path]
 
-    def _estimate_df_size(self, df: Any) -> int:
+    @staticmethod
+    def _estimate_df_size(df: Any) -> int:
         try:
             if hasattr(df, "memory_usage"):  # pandas
                 return int(df.memory_usage(deep=True).sum())
@@ -109,7 +110,7 @@ class MemoryCache:
 
     def _evict_if_needed(self) -> None:
         """Evict oldest entries if limits exceeded. Must hold _global_lock."""
-        while self._config.max_entries > 0 and len(self._cache) > self._config.max_entries:
+        while 0 < self._config.max_entries < len(self._cache):
             key, entry = self._cache.popitem(last=False)
             self._path_to_keys.get(entry.path, set()).discard(key)
             self._stats.evictions += 1
@@ -117,8 +118,7 @@ class MemoryCache:
             self._stats.current_memory_bytes -= entry.size_bytes
 
         while (
-            self._config.max_memory_bytes > 0
-            and self._stats.current_memory_bytes > self._config.max_memory_bytes
+            0 < self._config.max_memory_bytes < self._stats.current_memory_bytes
             and self._cache
         ):
             key, entry = self._cache.popitem(last=False)
