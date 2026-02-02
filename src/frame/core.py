@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from frame.backends.pandas import PandasBackend
 from frame.backends.polars import PolarsBackend
-from frame.cache import CacheManager, CacheMode, ChunkGranularity
+from frame.cache import CacheManager, CacheMode, ChunkBy
 from frame.calendar import BDateCalendar, Calendar
 from frame.config import get_default_cache_dir, get_default_parent_cache_dirs
 from frame.executor import (
@@ -37,7 +37,7 @@ class Frame(APIMixin):
         backend: Literal["pandas", "polars"] = "pandas",
         cache_dir: Path | str | None = None,
         parent_cache_dirs: list[Path | str] | None = None,
-        chunk_granularity: ChunkGranularity = "month",
+        chunk_by: ChunkBy = "month",
         read_workers: int | None = None,
         fetch_workers: int | None = 1,
         calendar: Calendar | None = None,
@@ -52,7 +52,7 @@ class Frame(APIMixin):
             cache_dir: Directory for parquet cache. Defaults to .frame_cache/
             parent_cache_dirs: Additional read-only cache directories to check
                 for missing data. Checked in order after primary cache.
-            chunk_granularity: Granularity for cache chunks ("day", "week",
+            chunk_by: Granularity for cache chunks ("day", "week",
                 "month", or "year"). Default is "month".
             read_workers: Concurrency for cache reads (parquet files).
                 None (default) uses ThreadPoolExecutor default (high, good for I/O).
@@ -65,7 +65,7 @@ class Frame(APIMixin):
         self._func = func
         self._kwargs = kwargs or {}
         self._backend_name = backend
-        self._chunk_granularity = chunk_granularity
+        self._chunk_by = chunk_by
         self._read_workers = read_workers
         self._fetch_workers = fetch_workers
         self._calendar = calendar or BDateCalendar()
@@ -94,7 +94,7 @@ class Frame(APIMixin):
             backend=self._backend,
             cache_dir=self._cache_dir,
             parent_cache_dirs=self._parent_cache_dirs,
-            chunk_granularity=self._chunk_granularity,
+            chunk_by=self._chunk_by,
             read_workers=self._read_workers,
             fetch_workers=self._fetch_workers,
             calendar=self._calendar,
@@ -298,6 +298,11 @@ class Frame(APIMixin):
             f"backend={self._backend_name}, "
             f"cache_key={self._cache_key})"
         )
+
+    @property
+    def cache_key(self) -> str:
+        """Return the cache key for this Frame."""
+        return self._cache_key
 
     @staticmethod
     def concat(frames: list["Frame | APIMixin"]) -> "Concat":

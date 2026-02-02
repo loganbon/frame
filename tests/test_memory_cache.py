@@ -59,7 +59,7 @@ class TestCacheKey:
 
     def test_make_with_no_columns_or_filters(self):
         """CacheKey.make creates key with None for optional params."""
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         key = CacheKey.make(path)
 
         assert key.path == path
@@ -68,7 +68,7 @@ class TestCacheKey:
 
     def test_make_with_columns(self):
         """CacheKey.make sorts columns for consistency."""
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         key1 = CacheKey.make(path, columns=["b", "a", "c"])
         key2 = CacheKey.make(path, columns=["a", "b", "c"])
         key3 = CacheKey.make(path, columns=["c", "a", "b"])
@@ -78,14 +78,14 @@ class TestCacheKey:
 
     def test_make_with_filters(self):
         """CacheKey.make converts filters to tuples."""
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         key = CacheKey.make(path, filters=[("value", ">", 1), ("id", "=", 0)])
 
         assert key.filters == (("value", ">", 1), ("id", "=", 0))
 
     def test_different_columns_different_keys(self):
         """Different columns produce different keys."""
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         key1 = CacheKey.make(path, columns=["a"])
         key2 = CacheKey.make(path, columns=["b"])
 
@@ -93,7 +93,7 @@ class TestCacheKey:
 
     def test_different_filters_different_keys(self):
         """Different filters produce different keys."""
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         key1 = CacheKey.make(path, filters=[("value", ">", 1)])
         key2 = CacheKey.make(path, filters=[("value", ">", 2)])
 
@@ -106,7 +106,7 @@ class TestMemoryCache:
     def test_put_and_get(self):
         """Basic put and get operations work."""
         cache = MemoryCache()
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         df = pd.DataFrame({"a": [1, 2, 3]})
 
         cache.put(path, df)
@@ -118,7 +118,7 @@ class TestMemoryCache:
     def test_get_miss_returns_none(self):
         """Get on missing key returns None."""
         cache = MemoryCache()
-        path = Path("/tmp/nonexistent.parquet")
+        path = Path("/tmp/nonexistent.prq")
 
         result = cache.get(path)
 
@@ -127,7 +127,7 @@ class TestMemoryCache:
     def test_put_with_columns_and_filters(self):
         """Put with columns/filters creates composite key."""
         cache = MemoryCache()
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         df_full = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
         df_filtered = pd.DataFrame({"a": [1]})
 
@@ -148,23 +148,23 @@ class TestMemoryCache:
 
         # Add 3 entries
         for i in range(3):
-            cache.put(Path(f"/tmp/{i}.parquet"), pd.DataFrame({"x": [i]}))
+            cache.put(Path(f"/tmp/{i}.prq"), pd.DataFrame({"x": [i]}))
 
         # Access first entry to make it most recent
-        cache.get(Path("/tmp/0.parquet"))
+        cache.get(Path("/tmp/0.prq"))
 
         # Add 4th entry - should evict entry 1 (oldest unused)
-        cache.put(Path("/tmp/3.parquet"), pd.DataFrame({"x": [3]}))
+        cache.put(Path("/tmp/3.prq"), pd.DataFrame({"x": [3]}))
 
-        assert cache.get(Path("/tmp/0.parquet")) is not None  # Kept (accessed)
-        assert cache.get(Path("/tmp/1.parquet")) is None      # Evicted
-        assert cache.get(Path("/tmp/2.parquet")) is not None  # Kept
-        assert cache.get(Path("/tmp/3.parquet")) is not None  # Kept
+        assert cache.get(Path("/tmp/0.prq")) is not None  # Kept (accessed)
+        assert cache.get(Path("/tmp/1.prq")) is None      # Evicted
+        assert cache.get(Path("/tmp/2.prq")) is not None  # Kept
+        assert cache.get(Path("/tmp/3.prq")) is not None  # Kept
 
     def test_invalidate_by_path(self):
         """Invalidate removes all entries for a path."""
         cache = MemoryCache()
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         df = pd.DataFrame({"a": [1, 2, 3]})
 
         # Add multiple entries for same path with different columns/filters
@@ -184,7 +184,7 @@ class TestMemoryCache:
         cache = MemoryCache()
 
         for i in range(5):
-            cache.put(Path(f"/tmp/{i}.parquet"), pd.DataFrame({"x": [i]}))
+            cache.put(Path(f"/tmp/{i}.prq"), pd.DataFrame({"x": [i]}))
 
         count = cache.clear()
 
@@ -195,7 +195,7 @@ class TestMemoryCache:
         """Disabled cache returns None and doesn't store."""
         config = CacheConfig(enabled=False)
         cache = MemoryCache(config)
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
         df = pd.DataFrame({"a": [1, 2, 3]})
 
         cache.put(path, df)
@@ -209,12 +209,12 @@ class TestMemoryCache:
         config = CacheConfig(max_entries=2)
         cache = MemoryCache(config)
 
-        cache.put(Path("/tmp/0.parquet"), pd.DataFrame({"x": [0]}))
-        cache.put(Path("/tmp/1.parquet"), pd.DataFrame({"x": [1]}))
+        cache.put(Path("/tmp/0.prq"), pd.DataFrame({"x": [0]}))
+        cache.put(Path("/tmp/1.prq"), pd.DataFrame({"x": [1]}))
 
-        cache.get(Path("/tmp/0.parquet"))  # Hit
-        cache.get(Path("/tmp/nonexistent.parquet"))  # Miss
-        cache.put(Path("/tmp/2.parquet"), pd.DataFrame({"x": [2]}))  # Evict
+        cache.get(Path("/tmp/0.prq"))  # Hit
+        cache.get(Path("/tmp/nonexistent.prq"))  # Miss
+        cache.put(Path("/tmp/2.prq"), pd.DataFrame({"x": [2]}))  # Evict
 
         stats = cache.get_stats()
 
@@ -228,7 +228,7 @@ class TestMemoryCache:
         cache = MemoryCache()
 
         for i in range(5):
-            cache.put(Path(f"/tmp/{i}.parquet"), pd.DataFrame({"x": [i]}))
+            cache.put(Path(f"/tmp/{i}.prq"), pd.DataFrame({"x": [i]}))
 
         assert cache.get_stats().current_entries == 5
 
@@ -244,11 +244,11 @@ class TestMemoryCache:
 
         # Add a small dataframe
         df_small = pd.DataFrame({"x": [1]})
-        cache.put(Path("/tmp/0.parquet"), df_small)
+        cache.put(Path("/tmp/0.prq"), df_small)
 
         # Add a larger dataframe that exceeds limit
         df_large = pd.DataFrame({"x": list(range(1000))})
-        cache.put(Path("/tmp/1.parquet"), df_large)
+        cache.put(Path("/tmp/1.prq"), df_large)
 
         # Small one should be evicted
         stats = cache.get_stats()
@@ -267,7 +267,7 @@ class TestMemoryCacheThreadSafety:
             try:
                 for i in range(100):
                     cache.put(
-                        Path(f"/tmp/thread{thread_id}_{i}.parquet"),
+                        Path(f"/tmp/thread{thread_id}_{i}.prq"),
                         pd.DataFrame({"x": [i]}),
                     )
             except Exception as e:
@@ -276,7 +276,7 @@ class TestMemoryCacheThreadSafety:
         def reader(thread_id):
             try:
                 for i in range(100):
-                    cache.get(Path(f"/tmp/thread{thread_id}_{i}.parquet"))
+                    cache.get(Path(f"/tmp/thread{thread_id}_{i}.prq"))
             except Exception as e:
                 errors.append(e)
 
@@ -295,7 +295,7 @@ class TestMemoryCacheThreadSafety:
     def test_concurrent_invalidation(self):
         """Concurrent invalidation is safe."""
         cache = MemoryCache()
-        path = Path("/tmp/test.parquet")
+        path = Path("/tmp/test.prq")
 
         # Pre-populate
         for i in range(10):
@@ -340,7 +340,7 @@ class TestModuleLevelFunctions:
     def test_clear_memory_cache(self):
         """clear_memory_cache clears singleton."""
         cache = get_memory_cache()
-        cache.put(Path("/tmp/test.parquet"), pd.DataFrame({"x": [1]}))
+        cache.put(Path("/tmp/test.prq"), pd.DataFrame({"x": [1]}))
 
         count = clear_memory_cache()
 
@@ -352,9 +352,9 @@ class TestModuleLevelFunctions:
         clear_memory_cache()
         cache = get_memory_cache()
 
-        cache.put(Path("/tmp/test.parquet"), pd.DataFrame({"x": [1]}))
-        cache.get(Path("/tmp/test.parquet"))
-        cache.get(Path("/tmp/nonexistent.parquet"))
+        cache.put(Path("/tmp/test.prq"), pd.DataFrame({"x": [1]}))
+        cache.get(Path("/tmp/test.prq"))
+        cache.get(Path("/tmp/nonexistent.prq"))
 
         stats = get_memory_cache_stats()
 
@@ -369,7 +369,7 @@ class TestFrameMemoryCacheIntegration:
     Note: These tests directly manipulate the memory cache to verify
     integration, since the disk cache has a pre-existing bug where
     _resolve_chunk_hierarchically uses .prq extension but write_chunk
-    uses .parquet extension.
+    uses .prq extension.
     """
 
     def test_read_chunk_uses_memory_cache(self, cache_dir):

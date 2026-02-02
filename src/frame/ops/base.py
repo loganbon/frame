@@ -1,8 +1,12 @@
 """Base Operation class for Frame transformations."""
 
+import hashlib
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from frame.cache import ChunkBy
 from frame.executor import execute_with_batching, execute_with_batching_async, get_current_batch
 from frame.mixins import APIMixin
 
@@ -136,3 +140,107 @@ class Operation(APIMixin):
         if params_repr:
             parts.append(params_repr)
         return f"{self.__class__.__name__}({', '.join(parts)})"
+
+    def _compute_cache_key(self) -> str:
+        """Compute a stable hash key from operation definition."""
+        key_data = {
+            "operation": self.__class__.__name__,
+            "operation_module": self.__class__.__module__,
+            "params": self._serialize_params(self._params),
+            "inputs": [self._get_input_cache_key(inp) for inp in self._inputs],
+        }
+        key_str = json.dumps(key_data, sort_keys=True, default=str)
+        return hashlib.sha256(key_str.encode()).hexdigest()[:16]
+
+    def _serialize_params(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Serialize params to JSON-compatible format."""
+        result = {}
+        for key, value in params.items():
+            if callable(value):
+                result[key] = f"callable({value.__name__})"
+            else:
+                try:
+                    json.dumps(value)
+                    result[key] = value
+                except (TypeError, ValueError):
+                    result[key] = str(value)
+        return result
+
+    def _get_input_cache_key(self, inp: "Frame | Operation") -> str:
+        """Get cache key for an input Frame or Operation."""
+        if hasattr(inp, "_cache_key"):
+            # Frame has _cache_key attribute
+            return inp._cache_key
+        elif isinstance(inp, Operation):
+            # Recursively compute for nested operations
+            return inp._compute_cache_key()
+        else:
+            return str(inp)
+
+    def to_frame(
+        self,
+        name: str | None = None,
+        cache_dir: Path | str | None = None,
+        parent_cache_dirs: list[Path | str] | None = None,
+        chunk_by: ChunkBy = "month",
+        read_workers: int | None = None,
+        fetch_workers: int | None = 1,
+    ) -> "Frame":
+        """Convert this Operation into a cached Frame.
+
+        Creates a Frame that wraps this operation, enabling parquet caching
+        of the operation's output. Useful for expensive operation pipelines
+        that are queried repeatedly.
+
+        Args:
+            name: Optional name for the cache key. If None, auto-generates
+                from operation definition (class, params, input cache keys).
+            cache_dir: Directory for parquet cache. Defaults to config default.
+            parent_cache_dirs: Additional read-only cache directories.
+            chunk_by: Cache chunk size ("day", "week", "month", "year").
+            read_workers: Concurrency for cache reads.
+            fetch_workers: Concurrency for data fetches.
+
+        Returns:
+            A Frame that caches the operation's output.
+
+        Example:
+            # Create an operation pipeline
+            pipeline = frame.rolling(window=20).shift(1).zscore()
+
+            # Materialize to a cached Frame
+            cached = pipeline.to_frame(name="rolling_zscore")
+
+            # Now queries use disk cache
+            data = cached.get_range(start, end)
+        """
+        from frame.core import Frame
+
+        # Determine cache key
+        cache_key = name if name is not None else self._compute_cache_key()
+
+        # Determine backend name from backend class
+        backend_name = "pandas"
+        if self._backend is not None:
+            backend_class = self._backend.__class__.__name__
+            if "Polars" in backend_class:
+                backend_name = "polars"
+
+        # Create fetch function that executes this operation
+        def fetch_operation(start_dt: datetime, end_dt: datetime) -> Any:
+            return self.get_range(start_dt, end_dt)
+
+        # Set function metadata for cache key generation
+        fetch_operation.__name__ = f"materialized_{cache_key}"
+        fetch_operation.__module__ = "frame.ops.materialized"
+
+        return Frame(
+            func=fetch_operation,
+            kwargs={},
+            backend=backend_name,
+            cache_dir=cache_dir,
+            parent_cache_dirs=parent_cache_dirs,
+            chunk_by=chunk_by,
+            read_workers=read_workers,
+            fetch_workers=fetch_workers,
+        )

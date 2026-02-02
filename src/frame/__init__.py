@@ -2,7 +2,7 @@
 
 from frame.backends.pandas import PandasBackend
 from frame.backends.polars import PolarsBackend
-from frame.cache import CacheManager, CacheMissError, CacheMode, ChunkGranularity
+from frame.cache import CacheManager, CacheMissError, CacheMode, ChunkBy
 from frame.calendar import BDateCalendar, Calendar, DateCalendar
 from frame.config import (
     configure_frame,
@@ -53,7 +53,7 @@ __all__ = [
     "CacheManager",
     "CacheMissError",
     "CacheMode",
-    "ChunkGranularity",
+    "ChunkBy",
     "Calendar",
     "BDateCalendar",
     "DateCalendar",

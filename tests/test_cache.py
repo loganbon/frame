@@ -72,7 +72,7 @@ class TestCacheManager:
         """Test date range chunking with month granularity."""
         backend = PandasBackend()
         cache = CacheManager(
-            sample_data_func, {}, backend, cache_dir, chunk_granularity="month"
+            sample_data_func, {}, backend, cache_dir, chunk_by="month"
         )
 
         start = datetime(2024, 1, 15)
@@ -92,7 +92,7 @@ class TestCacheManager:
         """Test date range chunking with day granularity."""
         backend = PandasBackend()
         cache = CacheManager(
-            sample_data_func, {}, backend, cache_dir, chunk_granularity="day"
+            sample_data_func, {}, backend, cache_dir, chunk_by="day"
         )
 
         start = datetime(2024, 1, 1)
@@ -136,7 +136,7 @@ class TestFrameCaching:
         frame.get_range(start, end)
 
         assert cache_dir.exists()
-        parquet_files = list(cache_dir.rglob("*.parquet"))
+        parquet_files = list(cache_dir.rglob("*.prq"))
         assert len(parquet_files) >= 1
 
     def test_partial_cache(self, sample_data_func, call_counter, cache_dir):
@@ -145,7 +145,7 @@ class TestFrameCaching:
             sample_data_func,
             {"multiplier": 1},
             cache_dir=cache_dir,
-            chunk_granularity="day"
+            chunk_by="day"
         )
 
         frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
@@ -440,8 +440,8 @@ class TestHierarchicalCache:
         frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
 
         # Data should be in primary, not parent
-        assert len(list(primary_cache.rglob("*.parquet"))) > 0
-        assert len(list(parent_cache.rglob("*.parquet"))) == 0
+        assert len(list(primary_cache.rglob("*.prq"))) > 0
+        assert len(list(parent_cache.rglob("*.prq"))) == 0
 
     def test_mixed_source_resolution(self, tmp_path):
         """Test that different chunks can come from different cache levels."""
@@ -467,7 +467,7 @@ class TestHierarchicalCache:
 
         # Populate parent cache with January only
         parent_frame = Frame(
-            shared_func, cache_dir=parent_cache, chunk_granularity="month"
+            shared_func, cache_dir=parent_cache, chunk_by="month"
         )
         parent_frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 31))
         assert call_counter["count"] == 1  # Fetched January
@@ -477,7 +477,7 @@ class TestHierarchicalCache:
             shared_func,
             cache_dir=primary_cache,
             parent_cache_dirs=[parent_cache],
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Request range spanning 2 months
@@ -514,7 +514,7 @@ class TestHierarchicalCache:
 
         # Populate parent cache with only first half of January
         parent_frame = Frame(
-            tracking_func, cache_dir=parent_cache, chunk_granularity="month"
+            tracking_func, cache_dir=parent_cache, chunk_by="month"
         )
         parent_frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 15))
         assert len(call_counter["dates_requested"]) == 1  # Fetched once
@@ -527,7 +527,7 @@ class TestHierarchicalCache:
             tracking_func,
             cache_dir=primary_cache,
             parent_cache_dirs=[parent_cache],
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Request full January - should get Jan 1-15 from parent, Jan 16-31 live
@@ -550,13 +550,13 @@ class TestChunkGranularity:
         frame = Frame(
             sample_data_func,
             cache_dir=cache_dir,
-            chunk_granularity="day",
+            chunk_by="day",
         )
 
         frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 3))
 
         # Should create 3 parquet files, one per day
-        parquet_files = list(cache_dir.rglob("*.parquet"))
+        parquet_files = list(cache_dir.rglob("*.prq"))
         assert len(parquet_files) == 3
 
     def test_week_granularity(self, sample_data_func, cache_dir):
@@ -564,13 +564,13 @@ class TestChunkGranularity:
         frame = Frame(
             sample_data_func,
             cache_dir=cache_dir,
-            chunk_granularity="week",
+            chunk_by="week",
         )
 
         # Request 2 weeks of data
         frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 14))
 
-        parquet_files = list(cache_dir.rglob("*.parquet"))
+        parquet_files = list(cache_dir.rglob("*.prq"))
         # Should create 2-3 parquet files (depends on week boundaries)
         assert len(parquet_files) >= 2
 
@@ -579,13 +579,13 @@ class TestChunkGranularity:
         frame = Frame(
             sample_data_func,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         frame.get_range(datetime(2024, 1, 15), datetime(2024, 3, 15))
 
         # Should create 3 parquet files, one per month
-        parquet_files = list(cache_dir.rglob("*.parquet"))
+        parquet_files = list(cache_dir.rglob("*.prq"))
         assert len(parquet_files) == 3
 
     def test_year_granularity(self, sample_data_func, cache_dir):
@@ -593,13 +593,13 @@ class TestChunkGranularity:
         frame = Frame(
             sample_data_func,
             cache_dir=cache_dir,
-            chunk_granularity="year",
+            chunk_by="year",
         )
 
         frame.get_range(datetime(2024, 6, 1), datetime(2025, 6, 1))
 
         # Should create 2 parquet files, one per year
-        parquet_files = list(cache_dir.rglob("*.parquet"))
+        parquet_files = list(cache_dir.rglob("*.prq"))
         assert len(parquet_files) == 2
 
 
@@ -625,14 +625,14 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # First request: populate cache for 3 months
         frame.get_range(datetime(2024, 1, 1), datetime(2024, 3, 31))
 
         # Verify cache files created
-        parquet_files = list(cache_dir.rglob("*.parquet"))
+        parquet_files = list(cache_dir.rglob("*.prq"))
         assert len(parquet_files) == 3
 
         # Second request: read from cache (uses concurrent reads)
@@ -662,7 +662,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Cache only January
@@ -695,7 +695,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Request 3 months of data
@@ -726,7 +726,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
             read_workers=2,  # Limit to 2 concurrent reads
         )
 
@@ -734,7 +734,7 @@ class TestConcurrentChunkOperations:
         frame.get_range(datetime(2024, 1, 1), datetime(2024, 6, 30))
 
         # Verify cache populated
-        parquet_files = list(cache_dir.rglob("*.parquet"))
+        parquet_files = list(cache_dir.rglob("*.prq"))
         assert len(parquet_files) == 6
 
     def test_fetch_workers_limits_fetch_concurrency(self, tmp_path):
@@ -767,7 +767,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
             fetch_workers=2,  # Limit to 2 concurrent fetches
         )
 
@@ -807,7 +807,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
             fetch_workers=1,  # Sequential (default)
         )
 
@@ -838,7 +838,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Request within single month
@@ -900,7 +900,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
             fetch_workers=4,  # Allow 4 concurrent fetches
         )
 
@@ -930,7 +930,7 @@ class TestConcurrentChunkOperations:
         frame = Frame(
             fetch_data,
             cache_dir=cache_dir,
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Request multiple uncached months with read-only mode

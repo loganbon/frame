@@ -203,7 +203,7 @@ class TestCalendarWithFrame:
             tracking_func,
             cache_dir=cache_dir,
             calendar=BDateCalendar(),
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Request a week of data (includes weekend)
@@ -234,7 +234,7 @@ class TestCalendarWithFrame:
             tracking_func,
             cache_dir=cache_dir,
             calendar=DateCalendar(),
-            chunk_granularity="month",
+            chunk_by="month",
         )
 
         # Request data

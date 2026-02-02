@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from frame.calendar import Calendar
 
 CacheMode = Literal["l", "a", "r", "w"]
-ChunkGranularity = Literal["day", "week", "month", "year"]
+ChunkBy = Literal["day", "week", "month", "year"]
 
 
 class ChunkResult(NamedTuple):
@@ -44,7 +44,7 @@ class CacheManager:
         backend: "Backend",
         cache_dir: Path,
         parent_cache_dirs: list[Path] | None = None,
-        chunk_granularity: ChunkGranularity = "month",
+        chunk_by: ChunkBy = "month",
         read_workers: int | None = None,
         fetch_workers: int | None = 1,
         calendar: "Calendar | None" = None,
@@ -55,7 +55,7 @@ class CacheManager:
         self._kwargs = kwargs
         self._backend = backend
         self._cache_dir = cache_dir
-        self._chunk_granularity = chunk_granularity
+        self._chunk_by = chunk_by
         self._parent_cache_dirs = parent_cache_dirs or []
         self._read_workers = read_workers  # None = ThreadPoolExecutor default (high)
         self._fetch_workers = fetch_workers  # Default 1 = sequential (safe for APIs)
@@ -72,20 +72,25 @@ class CacheManager:
         self._log.info(
             "cache_manager_initialized",
             cache_dir=str(self._cache_dir),
-            granularity=self._chunk_granularity,
+            granularity=self._chunk_by,
             read_workers=self._read_workers,
             fetch_workers=self._fetch_workers,
         )
 
     def _compute_cache_key(self) -> str:
-        """Compute a stable hash key from function name and kwargs."""
-        key_data = {
-            "func_name": self._func.__name__,
-            "func_module": self._func.__module__,
-            "kwargs": self._serialize_kwargs(self._kwargs),
-        }
-        key_str = json.dumps(key_data, sort_keys=True, default=str)
-        return hashlib.sha256(key_str.encode()).hexdigest()[:16]
+        """Compute a stable cache key as {name}/{cache_id}.
+
+        The name is the function's __name__ attribute.
+        The cache_id is a 16-char hash of the serialized kwargs.
+        """
+        name = self._func.__name__
+
+        # Hash only the kwargs (with Frames converted to their cache keys)
+        kwargs_data = self._serialize_kwargs(self._kwargs)
+        kwargs_str = json.dumps(kwargs_data, sort_keys=True, default=str)
+        cache_id = hashlib.sha256(kwargs_str.encode()).hexdigest()[:16]
+
+        return f"{name}/{cache_id}"
 
     def _serialize_kwargs(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         """Serialize kwargs to JSON-compatible format."""
@@ -105,40 +110,40 @@ class CacheManager:
 
     def _get_chunk_start(self, dt: datetime) -> datetime:
         """Get the start datetime of the chunk containing the given date."""
-        if self._chunk_granularity == "day":
+        if self._chunk_by == "day":
             return dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        elif self._chunk_granularity == "week":
+        elif self._chunk_by == "week":
             # ISO week starts on Monday
             weekday = dt.weekday()
             start = dt - timedelta(days=weekday)
             return start.replace(hour=0, minute=0, second=0, microsecond=0)
-        elif self._chunk_granularity == "month":
+        elif self._chunk_by == "month":
             return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        elif self._chunk_granularity == "year":
+        elif self._chunk_by == "year":
             return dt.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
         else:
-            raise ValueError(f"Unknown chunk granularity: {self._chunk_granularity}")
+            raise ValueError(f"Unknown chunk granularity: {self._chunk_by}")
 
     def _get_chunk_end(self, dt: datetime) -> datetime:
         """Get the end datetime of the chunk containing the given date."""
-        if self._chunk_granularity == "day":
+        if self._chunk_by == "day":
             return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
-        elif self._chunk_granularity == "week":
+        elif self._chunk_by == "week":
             # ISO week ends on Sunday
             weekday = dt.weekday()
             end = dt + timedelta(days=6 - weekday)
             return end.replace(hour=23, minute=59, second=59, microsecond=999999)
-        elif self._chunk_granularity == "month":
+        elif self._chunk_by == "month":
             last_day = monthrange(dt.year, dt.month)[1]
             return dt.replace(
                 day=last_day, hour=23, minute=59, second=59, microsecond=999999
             )
-        elif self._chunk_granularity == "year":
+        elif self._chunk_by == "year":
             return dt.replace(
                 month=12, day=31, hour=23, minute=59, second=59, microsecond=999999
             )
         else:
-            raise ValueError(f"Unknown chunk granularity: {self._chunk_granularity}")
+            raise ValueError(f"Unknown chunk granularity: {self._chunk_by}")
 
     def get_chunk_ranges(
         self, start: datetime, end: datetime
@@ -152,47 +157,35 @@ class CacheManager:
             chunks.append((current, chunk_end))
 
             # Move to next chunk
-            if self._chunk_granularity == "day":
+            if self._chunk_by == "day":
                 current = current + timedelta(days=1)
-            elif self._chunk_granularity == "week":
+            elif self._chunk_by == "week":
                 current = current + timedelta(days=7)
-            elif self._chunk_granularity == "month":
+            elif self._chunk_by == "month":
                 if current.month == 12:
                     current = current.replace(year=current.year + 1, month=1, day=1)
                 else:
                     current = current.replace(month=current.month + 1, day=1)
-            elif self._chunk_granularity == "year":
+            elif self._chunk_by == "year":
                 current = current.replace(year=current.year + 1, month=1, day=1)
 
         return chunks
 
-    def _chunk_path(self, dt: datetime) -> Path:
+    def _chunk_path(self, dt: datetime, chunk_dir: Path | None = None) -> Path:
         """Get the parquet file path for a chunk containing the given date."""
-        if self._chunk_granularity == "day":
-            return self._chunk_dir / f"{dt.year}/{dt.month:02d}/{dt.day:02d}.parquet"
-        elif self._chunk_granularity == "week":
-            week = dt.isocalendar()[1]
-            return self._chunk_dir / f"{dt.year}/W{week:02d}.parquet"
-        elif self._chunk_granularity == "month":
-            return self._chunk_dir / f"{dt.year}/{dt.month:02d}.parquet"
-        elif self._chunk_granularity == "year":
-            return self._chunk_dir / f"{dt.year}.parquet"
-        else:
-            raise ValueError(f"Unknown chunk granularity: {self._chunk_granularity}")
-
-    def _chunk_path_for_dir(self, chunk_dir: Path, dt: datetime) -> Path:
-        """Get the parquet file path for a chunk in a specific directory."""
-        if self._chunk_granularity == "day":
+        if chunk_dir is None:
+            chunk_dir = self._chunk_dir
+        if self._chunk_by == "day":
             return chunk_dir / f"{dt.year}/{dt.month:02d}/{dt.day:02d}.prq"
-        elif self._chunk_granularity == "week":
+        elif self._chunk_by == "week":
             week = dt.isocalendar()[1]
             return chunk_dir / f"{dt.year}/W{week:02d}.prq"
-        elif self._chunk_granularity == "month":
+        elif self._chunk_by == "month":
             return chunk_dir / f"{dt.year}/{dt.month:02d}.prq"
-        elif self._chunk_granularity == "year":
+        elif self._chunk_by == "year":
             return chunk_dir / f"{dt.year}.prq"
         else:
-            raise ValueError(f"Unknown chunk granularity: {self._chunk_granularity}")
+            raise ValueError(f"Unknown chunk granularity: {self._chunk_by}")
 
     def _dates_in_range(self, start: datetime, end: datetime) -> set[date]:
         """Get all valid dates in a range as a set."""
@@ -294,7 +287,7 @@ class CacheManager:
         cache_dirs = self._parent_chunk_dirs + [self._chunk_dir]
 
         for cache_dir in cache_dirs:
-            chunk_path = self._chunk_path_for_dir(cache_dir, chunk_start)
+            chunk_path = self._chunk_path(chunk_start, chunk_dir=cache_dir)
             if not chunk_path.exists():
                 continue
 
@@ -387,7 +380,7 @@ class CacheManager:
         if chunk_path.exists():
             return True
         for parent_dir in self._parent_chunk_dirs:
-            parent_path = self._chunk_path_for_dir(parent_dir, chunk_start)
+            parent_path = self._chunk_path(chunk_start, chunk_dir=parent_dir)
             if parent_path.exists():
                 return True
         return False
@@ -430,7 +423,7 @@ class CacheManager:
 
         # Check parents
         for parent_dir in self._parent_chunk_dirs:
-            parent_path = self._chunk_path_for_dir(parent_dir, chunk_start)
+            parent_path = self._chunk_path(chunk_start, chunk_dir=parent_dir)
             if parent_path.exists():
                 # Try memory cache first
                 df = memory_cache.get(parent_path, columns=columns, filters=filters)
