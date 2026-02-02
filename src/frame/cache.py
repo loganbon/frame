@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, NamedTuple
 
 from frame.logging import get_logger
+from frame.memory_cache import get_memory_cache
 
 if TYPE_CHECKING:
     from frame.backends.base import Backend
@@ -290,7 +291,7 @@ class CacheManager:
         remaining_dates = requested_dates.copy()
 
         # Check all cache levels: primary first, then parents
-        cache_dirs = [self._chunk_dir] + self._parent_chunk_dirs
+        cache_dirs = self._parent_chunk_dirs + [self._chunk_dir]
 
         for cache_dir in cache_dirs:
             chunk_path = self._chunk_path_for_dir(cache_dir, chunk_start)
@@ -359,6 +360,7 @@ class CacheManager:
 
         # Merge with existing primary cache chunk
         chunk_path = self._chunk_path(chunk_start)
+        memory_cache = get_memory_cache()
         if chunk_path.exists():
             try:
                 existing = self._backend.read_parquet(chunk_path)
@@ -372,6 +374,9 @@ class CacheManager:
                 self._backend.to_parquet(data, chunk_path)
         else:
             self._backend.to_parquet(data, chunk_path)
+
+        # Invalidate memory cache entries for this path after write
+        memory_cache.invalidate(chunk_path)
 
         self._log.debug("cache_chunk_written", chunk_path=str(chunk_path))
         return data
@@ -402,20 +407,46 @@ class CacheManager:
             columns: List of column names to read. If None, reads all columns.
             filters: List of (column, operator, value) tuples for row filtering.
         """
+        memory_cache = get_memory_cache()
+
         # Check primary first
         chunk_path = self._chunk_path(chunk_start)
         if chunk_path.exists():
+            # Try memory cache first (key includes columns/filters)
+            df = memory_cache.get(chunk_path, columns=columns, filters=filters)
+            if df is not None:
+                self._log.debug("memory_cache_hit", path=str(chunk_path))
+                return df
+
+            # Memory miss - read from disk
             self._log.debug("reading_chunk", chunk_path=str(chunk_path), source="primary")
-            return self._backend.read_parquet(chunk_path, columns=columns, filters=filters)
+            df = self._backend.read_parquet(chunk_path, columns=columns, filters=filters)
+
+            # Cache result (with columns/filters in key)
+            if not self._backend.is_empty(df):
+                memory_cache.put(chunk_path, df, columns=columns, filters=filters)
+
+            return df
 
         # Check parents
         for parent_dir in self._parent_chunk_dirs:
             parent_path = self._chunk_path_for_dir(parent_dir, chunk_start)
             if parent_path.exists():
+                # Try memory cache first
+                df = memory_cache.get(parent_path, columns=columns, filters=filters)
+                if df is not None:
+                    self._log.debug("memory_cache_hit", path=str(parent_path))
+                    return df
+
                 self._log.debug("reading_chunk", chunk_path=str(parent_path), source="parent")
-                return self._backend.read_parquet(
+                df = self._backend.read_parquet(
                     parent_path, columns=columns, filters=filters
                 )
+
+                if not self._backend.is_empty(df):
+                    memory_cache.put(parent_path, df, columns=columns, filters=filters)
+
+                return df
 
         return self._backend.empty()
 
@@ -424,6 +455,8 @@ class CacheManager:
         path = self._chunk_path(chunk_start)
         self._log.debug("writing_chunk", chunk_path=str(path))
         self._backend.to_parquet(df, path)
+        # Invalidate ALL memory cache entries for this path (any columns/filters)
+        get_memory_cache().invalidate(path)
 
     def fetch_and_cache_chunk(
         self,

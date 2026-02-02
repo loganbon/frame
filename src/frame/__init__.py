@@ -3,6 +3,13 @@
 from frame.backends.pandas import PandasBackend
 from frame.backends.polars import PolarsBackend
 from frame.cache import CacheManager, CacheMissError, CacheMode, ChunkGranularity
+from frame.memory_cache import (
+    CacheConfig,
+    CacheStats,
+    clear_memory_cache,
+    configure_memory_cache,
+    get_memory_cache_stats,
+)
 from frame.calendar import BDateCalendar, Calendar, DateCalendar
 from frame.core import Frame
 from frame.logging import configure_logging, get_logger
@@ -46,6 +53,11 @@ __all__ = [
     "DateCalendar",
     "configure_logging",
     "get_logger",
+    "CacheConfig",
+    "CacheStats",
+    "clear_memory_cache",
+    "configure_memory_cache",
+    "get_memory_cache_stats",
     *ops_all,
 ]
 __version__ = "0.1.0"
