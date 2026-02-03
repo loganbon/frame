@@ -1,4 +1,4 @@
-"""LazyFrame and LazyOperation proxies for nested frame batching."""
+"""LazyFrame proxy for nested frame batching."""
 
 import time
 from datetime import datetime
@@ -10,12 +10,98 @@ from frame.logging import get_logger
 
 if TYPE_CHECKING:
     from frame.core import Frame
-    from frame.ops.base import Operation
 
 _log = get_logger(__name__)
 
 
-class _LazyMixins:
+class LazyFrame:
+    """Proxy that defers data fetch/transformation until actually needed.
+
+    When created within a batching context, registers itself for
+    concurrent resolution. Otherwise resolves immediately on access.
+
+    Handles both source frames (data fetching) and transformation frames
+    (operations) based on the frame's _is_source attribute.
+    """
+
+    def __init__(
+        self,
+        frame: "Frame",
+        start_dt: datetime,
+        end_dt: datetime,
+        columns: list[str] | None = None,
+        filters: list[tuple] | None = None,
+        cache_mode: "CacheMode" = "a",
+    ):
+        self._frame = frame
+        self._start = start_dt
+        self._end = end_dt
+        self._columns = columns
+        self._filters = filters
+        self._cache_mode = cache_mode
+        self._data: Any = None
+        self._resolved = False
+        self._input_lazies: list[Any] = []
+
+        batch = get_current_batch()
+        if batch is not None:
+            batch.append(self)
+            # For transformation frames (Operations), collect lazy inputs
+            if not getattr(frame, '_is_source', True) and hasattr(frame, '_inputs'):
+                for inp in frame._inputs:
+                    # Only pass cache_mode to input frames
+                    # columns/filters are applied to the operation's output, not inputs
+                    lazy = inp.get_range(start_dt, end_dt, cache_mode=cache_mode)
+                    self._input_lazies.append(lazy)
+
+    def _resolve(self) -> Any:
+        """Fetch data or apply transformation if not already resolved."""
+        if not self._resolved:
+            if self._data is None:
+                is_source = getattr(self._frame, '_is_source', True)
+                if is_source:
+                    # Source frame: fetch data
+                    func_name = getattr(self._frame._func, '__name__', 'unknown')
+                    _log.debug("lazy_frame_resolving", frame_func=func_name)
+                    start_time = time.perf_counter()
+                    self._data = self._frame._fetch_data(
+                        self._start,
+                        self._end,
+                        columns=self._columns,
+                        filters=self._filters,
+                        cache_mode=self._cache_mode,
+                    )
+                    elapsed_ms = (time.perf_counter() - start_time) * 1000
+                    _log.debug("lazy_frame_resolved", elapsed_ms=round(elapsed_ms, 2))
+                else:
+                    # Transformation frame (Operation): apply to resolved inputs
+                    _log.debug(
+                        "lazy_frame_resolving_operation",
+                        operation=self._frame.__class__.__name__,
+                    )
+                    resolved_inputs = [
+                        li._resolve() if hasattr(li, "_resolve") else li
+                        for li in self._input_lazies
+                    ]
+                    self._data = self._frame._apply(
+                        resolved_inputs, **self._frame._params
+                    )
+            self._resolved = True
+        return self._data
+
+    def __repr__(self) -> str:
+        """String representation."""
+        if self._resolved:
+            return repr(self._data)
+        is_source = getattr(self._frame, '_is_source', True)
+        if is_source:
+            return f"LazyFrame(frame={self._frame}, start={self._start}, end={self._end}, resolved=False)"
+        else:
+            return (
+                f"LazyFrame(operation={self._frame.__class__.__name__}, "
+                f"start={self._start}, end={self._end}, resolved=False)"
+            )
+
     def __getattr__(self, name: str) -> Any:
         """Proxy attribute access to underlying DataFrame."""
         return getattr(self._resolve(), name)
@@ -119,112 +205,3 @@ class _LazyMixins:
     def __hash__(self) -> int:
         """Hash based on object identity for use in sets/dicts."""
         return id(self)
-
-
-class LazyFrame(_LazyMixins):
-    """Proxy that defers data fetch until actually needed.
-
-    When created within a batching context, registers itself for
-    concurrent resolution. Otherwise resolves immediately on access.
-    """
-
-    def __init__(
-        self,
-        frame: "Frame",
-        start_dt: datetime,
-        end_dt: datetime,
-        columns: list[str] | None = None,
-        filters: list[tuple] | None = None,
-        cache_mode: "CacheMode" = "a",
-    ):
-        self._frame = frame
-        self._start = start_dt
-        self._end = end_dt
-        self._columns = columns
-        self._filters = filters
-        self._cache_mode = cache_mode
-        self._data: Any = None
-        self._resolved = False
-
-        batch = get_current_batch()
-        if batch is not None:
-            batch.append(self)
-
-    def _resolve(self) -> Any:
-        """Fetch data if not already resolved."""
-        if not self._resolved:
-            if self._data is None:
-                _log.debug(
-                    "lazy_frame_resolving", frame_func=self._frame._func.__name__
-                )
-                start_time = time.perf_counter()
-                self._data = self._frame._fetch_data(
-                    self._start,
-                    self._end,
-                    columns=self._columns,
-                    filters=self._filters,
-                    cache_mode=self._cache_mode,
-                )
-                elapsed_ms = (time.perf_counter() - start_time) * 1000
-                _log.debug("lazy_frame_resolved", elapsed_ms=round(elapsed_ms, 2))
-            self._resolved = True
-        return self._data
-
-    def __repr__(self) -> str:
-        """String representation."""
-        if self._resolved:
-            return repr(self._data)
-        return f"LazyFrame(frame={self._frame}, start={self._start}, end={self._end}, resolved=False)"
-
-
-class LazyOperation(_LazyMixins):
-    """Proxy that defers operation execution until actually needed.
-
-    When created within a batching context, registers itself for
-    concurrent resolution with dependency tracking.
-    """
-
-    def __init__(
-        self, operation: "Operation", start_dt: datetime, end_dt: datetime
-    ) -> None:
-        self._operation = operation
-        self._start = start_dt
-        self._end = end_dt
-        self._data: Any = None
-        self._resolved = False
-        self._input_lazies: list[Any] = []
-
-        batch = get_current_batch()
-        if batch is not None:
-            batch.append(self)
-            # Collect LazyFrames/LazyOperations for inputs
-            for inp in operation._inputs:
-                lazy = inp.get_range(start_dt, end_dt)
-                self._input_lazies.append(lazy)
-
-    def _resolve(self) -> Any:
-        """Resolve by applying operation to already-resolved inputs."""
-        if not self._resolved:
-            if self._data is None:
-                _log.debug(
-                    "lazy_operation_resolving",
-                    operation=self._operation.__class__.__name__,
-                )
-                resolved_inputs = [
-                    li._resolve() if hasattr(li, "_resolve") else li
-                    for li in self._input_lazies
-                ]
-                self._data = self._operation._apply(
-                    resolved_inputs, **self._operation._params
-                )
-            self._resolved = True
-        return self._data
-
-    def __repr__(self) -> str:
-        """String representation."""
-        if self._resolved:
-            return repr(self._data)
-        return (
-            f"LazyOperation(operation={self._operation.__class__.__name__}, "
-            f"start={self._start}, end={self._end}, resolved=False)"
-        )

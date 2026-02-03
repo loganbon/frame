@@ -2,22 +2,10 @@
 
 from typing import TYPE_CHECKING, Any
 
-import pandas as pd
-
-from frame.ops.base import Operation
+from frame.ops.base import Operation, _is_polars, _apply_filters
 
 if TYPE_CHECKING:
     from frame.core import Frame
-
-
-def _is_polars(df: Any) -> bool:
-    """Check if DataFrame is a polars DataFrame."""
-    return hasattr(df, "lazy")
-
-
-def _is_pandas(df: Any) -> bool:
-    """Check if DataFrame is a pandas DataFrame."""
-    return isinstance(df, pd.DataFrame)
 
 
 class Rolling(Operation):
@@ -387,37 +375,4 @@ class Filter(Operation):
 
     def _apply(self, inputs: list[Any], filters: list[tuple]) -> Any:
         df = inputs[0]
-        for col, op, val in filters:
-            df = self._apply_filter(df, col, op, val)
-        return df
-
-    def _apply_filter(self, df: Any, col: str, op: str, val: Any) -> Any:
-        """Apply a single filter condition.
-
-        Detects the backend by checking for polars-specific attributes.
-        """
-        if _is_polars(df):
-            from frame.backends.polars import _build_polars_filter
-
-            expr = _build_polars_filter(col, op, val)
-            return df.filter(expr)
-        else:
-            # Pandas
-            if op in ("=", "=="):
-                return df[df[col] == val]
-            elif op == "!=":
-                return df[df[col] != val]
-            elif op == "<":
-                return df[df[col] < val]
-            elif op == "<=":
-                return df[df[col] <= val]
-            elif op == ">":
-                return df[df[col] > val]
-            elif op == ">=":
-                return df[df[col] >= val]
-            elif op == "in":
-                return df[df[col].isin(val)]
-            elif op == "not in":
-                return df[~df[col].isin(val)]
-            else:
-                raise ValueError(f"Unknown filter operator: {op}")
+        return _apply_filters(df, filters)

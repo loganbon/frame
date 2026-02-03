@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from frame.logging import get_logger
 
 if TYPE_CHECKING:
-    from frame.proxy import LazyFrame, LazyOperation
+    from frame.proxy import LazyFrame
 
 _log = get_logger(__name__)
 
@@ -36,39 +36,63 @@ def reset_batch_context(token: contextvars.Token) -> None:
 
 
 def _is_lazy_operation(item: Any) -> bool:
-    """Check if item is a LazyOperation (avoid circular import)."""
-    return "_input_lazies" in getattr(item, "__dict__", {})
+    """Check if item is a LazyFrame for an operation (transformation).
+
+    Returns True if the item is a LazyFrame wrapping a transformation frame
+    (i.e., has _input_lazies populated).
+    """
+    d = getattr(item, "__dict__", {})
+    if "_frame" not in d:
+        return False
+    # Check if it's a transformation (has _input_lazies with items)
+    input_lazies = d.get("_input_lazies", [])
+    return len(input_lazies) > 0
 
 
 def _is_lazy_frame(item: Any) -> bool:
-    """Check if item is a LazyFrame (avoid circular import)."""
+    """Check if item is a LazyFrame for a source frame.
+
+    Returns True if the item is a LazyFrame wrapping a source frame
+    (i.e., does not have _input_lazies populated).
+    """
     d = getattr(item, "__dict__", {})
-    return "_frame" in d and "_input_lazies" not in d
+    if "_frame" not in d:
+        return False
+    # Check if it's a source frame (no _input_lazies or empty)
+    input_lazies = d.get("_input_lazies", [])
+    return len(input_lazies) == 0
 
 
 def _resolve_lazy_frame(item: "LazyFrame") -> Any:
-    """Resolve a LazyFrame by fetching its data."""
-    return item._frame._fetch_data(
-        item._start,
-        item._end,
-        columns=item._columns,
-        filters=item._filters,
-        cache_mode=item._cache_mode,
-    )
+    """Resolve a LazyFrame by fetching its data or applying transformation."""
+    # Skip if already resolved (e.g., by _execute calling _resolve() directly)
+    if getattr(item, '_resolved', False):
+        return item._data
 
+    frame = item._frame
+    is_source = getattr(frame, '_is_source', True)
 
-def _resolve_lazy_operation(item: "LazyOperation") -> Any:
-    """Resolve a LazyOperation using its already-resolved inputs."""
-    resolved_inputs = [li._data for li in item._input_lazies]
-    return item._operation._apply(resolved_inputs, **item._operation._params)
+    if is_source:
+        # Source frame: fetch data
+        return frame._fetch_data(
+            item._start,
+            item._end,
+            columns=item._columns,
+            filters=item._filters,
+            cache_mode=item._cache_mode,
+        )
+    else:
+        # Transformation frame: apply to resolved inputs
+        resolved_inputs = [li._data for li in item._input_lazies]
+        return frame._apply(resolved_inputs, **frame._params)
 
 
 def resolve_batch_sync(batch: list) -> None:
     """Resolve batch with dependency ordering using threads.
 
     Uses topological ordering to resolve items in the correct order:
-    1. LazyFrames have no dependencies and are resolved first in parallel
-    2. LazyOperations depend on their input_lazies and are resolved
+    1. Source LazyFrames have no dependencies and are resolved first in parallel
+    2. Transformation LazyFrames depend on their input_lazies and are resolved
        once all dependencies are resolved
     """
     if not batch:
@@ -80,12 +104,9 @@ def resolve_batch_sync(batch: list) -> None:
     batch_set = set(batch)
     deps: dict[Any, set] = {}
     for item in batch:
-        if _is_lazy_operation(item):
-            # LazyOperation depends on its input_lazies that are in the batch
-            deps[item] = set(item._input_lazies) & batch_set
-        else:
-            # LazyFrame has no dependencies
-            deps[item] = set()
+        # Get input_lazies if present (transformation frames have these)
+        input_lazies = getattr(item, '_input_lazies', [])
+        deps[item] = set(input_lazies) & batch_set
 
     resolved: set = set()
     round_num = 0
@@ -104,14 +125,11 @@ def resolve_batch_sync(batch: list) -> None:
 
         _log.debug("batch_resolution_round", round=round_num, ready_count=len(ready))
 
-        # Resolve ready items in parallel
+        # Resolve ready items in parallel using unified resolver
         with ThreadPoolExecutor() as pool:
             futures = []
             for item in ready:
-                if _is_lazy_operation(item):
-                    future = pool.submit(_resolve_lazy_operation, item)
-                else:
-                    future = pool.submit(_resolve_lazy_frame, item)
+                future = pool.submit(_resolve_lazy_frame, item)
                 futures.append((item, future))
 
             for item, future in futures:
@@ -137,18 +155,15 @@ async def resolve_batch_async(batch: list) -> None:
     batch_set = set(batch)
     deps: dict[Any, set] = {}
     for item in batch:
-        if _is_lazy_operation(item):
-            deps[item] = set(item._input_lazies) & batch_set
-        else:
-            deps[item] = set()
+        # Get input_lazies if present (transformation frames have these)
+        input_lazies = getattr(item, '_input_lazies', [])
+        deps[item] = set(input_lazies) & batch_set
 
     resolved: set = set()
 
     async def resolve_one(item: Any) -> tuple[Any, Any]:
-        if _is_lazy_operation(item):
-            data = await loop.run_in_executor(None, _resolve_lazy_operation, item)
-        else:
-            data = await loop.run_in_executor(None, _resolve_lazy_frame, item)
+        # Use unified resolver for both source and transformation frames
+        data = await loop.run_in_executor(None, _resolve_lazy_frame, item)
         return item, data
 
     while len(resolved) < len(batch):

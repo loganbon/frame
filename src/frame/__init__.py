@@ -29,7 +29,6 @@ from frame.ops import (
     Fillna,
     Filter,
     Mul,
-    Operation,
     Pct,
     Pow,
     Rolling,
@@ -41,36 +40,69 @@ from frame.ops import (
     Winsorize,
     Zscore,
 )
-from frame.ops import __all__ as ops_all
-from frame.proxy import LazyFrame, LazyOperation
+from frame.ops.concat import Concat
+# Import Operation for backwards compatibility but don't expose prominently
+from frame.ops.base import Operation
+from frame.proxy import LazyFrame
+
+# LazyOperation is now an alias for LazyFrame (backwards compatibility)
+LazyOperation = LazyFrame
 
 __all__ = [
+    # Primary API - users interact with Frame
     "Frame",
+    "LazyFrame",
+    # Backends
     "PandasBackend",
     "PolarsBackend",
-    "LazyFrame",
-    "LazyOperation",
-    "Operation",
+    # Cache
     "CacheManager",
     "CacheMissError",
     "CacheMode",
     "ChunkBy",
+    # Calendar
     "Calendar",
     "BDateCalendar",
     "DateCalendar",
+    # Logging
     "configure_logging",
     "get_logger",
+    # Memory cache
     "CacheConfig",
     "CacheStats",
     "clear_memory_cache",
     "configure_memory_cache",
     "get_memory_cache_stats",
+    # Config
     "configure_frame",
     "get_default_cache_dir",
     "get_default_parent_cache_dirs",
     "reset_frame_config",
+    # Batching
     "batch",
     "async_batch",
-    *ops_all,
+    # Operations (exported for direct use, all are Frame subclasses)
+    "Abs",
+    "Add",
+    "Clip",
+    "Concat",
+    "Diff",
+    "Div",
+    "Fillna",
+    "Filter",
+    "Mul",
+    "Pct",
+    "Pow",
+    "Rolling",
+    "Select",
+    "Shift",
+    "Sub",
+    "ToPandas",
+    "ToPolars",
+    "Winsorize",
+    "Zscore",
+    # Backwards compatibility (internal implementation detail)
+    "Operation",
+    "LazyOperation",
 ]
 __version__ = "0.1.0"

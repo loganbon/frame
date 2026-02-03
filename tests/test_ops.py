@@ -15,6 +15,7 @@ from frame import (
     Fillna,
     Filter,
     Frame,
+    LazyFrame,
     Mul,
     Operation,
     Pct,
@@ -28,7 +29,6 @@ from frame import (
     Winsorize,
     Zscore,
 )
-from frame.proxy import LazyOperation
 
 
 @pytest.fixture
@@ -456,7 +456,7 @@ class TestConcurrentResolution:
         try:
             # This should create LazyFrame for prices
             lazy_prices = prices.get_range(start, end)
-            # This should create LazyOperation for rolling, which adds LazyFrame for prices
+            # This should create LazyFrame for rolling, which adds LazyFrame for prices
             lazy_rolling = rolling.get_range(start, end)
 
             # Verify both are in batch
@@ -496,8 +496,8 @@ class TestConcurrentResolution:
             lazy_shifted = shifted.get_range(start, end)
 
             # Both operations should be in batch, plus their shared dependency
-            # rolling creates: LazyOperation(rolling), LazyFrame(prices)
-            # shifted creates: LazyOperation(shifted), LazyFrame(prices)
+            # rolling creates: LazyFrame(rolling), LazyFrame(prices)
+            # shifted creates: LazyFrame(shifted), LazyFrame(prices)
             assert len(batch) >= 2  # At least rolling and shifted operations
 
             # Resolve the batch
@@ -516,10 +516,10 @@ class TestConcurrentResolution:
 
 
 class TestLazyOperation:
-    """Test LazyOperation proxy behavior."""
+    """Test LazyFrame proxy behavior for operations."""
 
     def test_lazy_operation_creation(self, prices_frame):
-        """Test LazyOperation is created in batch context."""
+        """Test LazyFrame is created in batch context for operations."""
         from frame.executor import set_batch_context, reset_batch_context
 
         batch = []
@@ -532,13 +532,13 @@ class TestLazyOperation:
 
             result = rolling.get_range(start, end)
 
-            assert isinstance(result, LazyOperation)
+            assert isinstance(result, LazyFrame)
             assert result in batch
         finally:
             reset_batch_context(token)
 
     def test_lazy_operation_proxy_methods(self, prices_frame):
-        """Test LazyOperation proxy methods work correctly."""
+        """Test LazyFrame proxy methods work correctly for operations."""
         rolling = Rolling(prices_frame, window=3)
         start = datetime(2024, 1, 1)
         end = datetime(2024, 1, 10)
@@ -551,7 +551,7 @@ class TestLazyOperation:
         assert result["value"].isna().any()
 
     def test_lazy_operation_repr_unresolved(self, prices_frame):
-        """Test LazyOperation repr when unresolved."""
+        """Test LazyFrame repr when unresolved for operations."""
         from frame.executor import set_batch_context, reset_batch_context
 
         batch = []
@@ -565,7 +565,7 @@ class TestLazyOperation:
             result = rolling.get_range(start, end)
             repr_str = repr(result)
 
-            assert "LazyOperation" in repr_str
+            assert "LazyFrame" in repr_str
             assert "Rolling" in repr_str
             assert "resolved=False" in repr_str
         finally:
@@ -1280,3 +1280,310 @@ class TestConversionOperations:
 
         with pytest.raises(TypeError, match="Cannot convert"):
             converted.get_range(datetime(2024, 1, 1), datetime(2024, 1, 1))
+
+
+class TestOperationCacheMode:
+    """Test cache_mode propagation through Operations."""
+
+    def test_cache_mode_propagates_to_source_frame(self, tmp_path):
+        """cache_mode passed to operation.get_range() reaches source frame."""
+        call_counter = {"count": 0}
+
+        def fetch_data(start_dt, end_dt):
+            call_counter["count"] += 1
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": "A",
+                    "value": 1.0,
+                })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        # First call populates cache
+        op.get_range(start, end)
+        assert call_counter["count"] == 1
+
+        # Default cache_mode="a" uses cache, no new fetch
+        op.get_range(start, end)
+        assert call_counter["count"] == 1
+
+        # cache_mode="w" forces refresh
+        op.get_range(start, end, cache_mode="w")
+        assert call_counter["count"] == 2
+
+    def test_cache_mode_propagates_through_chained_operations(self, tmp_path):
+        """cache_mode propagates through multiple chained operations."""
+        call_counter = {"count": 0}
+
+        def fetch_data(start_dt, end_dt):
+            call_counter["count"] += 1
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": "A",
+                    "value": 1.0,
+                })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        # Chain multiple operations
+        op = frame.rolling(2).shift(1).abs()
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        # First call populates cache
+        op.get_range(start, end)
+        assert call_counter["count"] == 1
+
+        # cache_mode="w" propagates through the chain
+        op.get_range(start, end, cache_mode="w")
+        assert call_counter["count"] == 2
+
+    def test_cache_mode_live_skips_cache(self, tmp_path):
+        """cache_mode='l' (live) always fetches fresh data."""
+        call_counter = {"count": 0}
+
+        def fetch_data(start_dt, end_dt):
+            call_counter["count"] += 1
+            return pd.DataFrame({
+                "as_of_date": [start_dt],
+                "id": ["A"],
+                "value": [1.0],
+            }).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        # Live mode always fetches
+        op.get_range(start, end, cache_mode="l")
+        assert call_counter["count"] == 1
+
+        op.get_range(start, end, cache_mode="l")
+        assert call_counter["count"] == 2
+
+        op.get_range(start, end, cache_mode="l")
+        assert call_counter["count"] == 3
+
+    def test_operation_get_with_cache_mode(self, tmp_path):
+        """Operation.get() accepts cache_mode parameter."""
+        call_counter = {"count": 0}
+
+        def fetch_data(start_dt, end_dt):
+            call_counter["count"] += 1
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": "A",
+                    "value": 1.0,
+                })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        dt = datetime(2024, 1, 15)
+
+        # First call populates cache
+        op.get(dt)
+        assert call_counter["count"] == 1
+
+        # cache_mode="w" forces refresh
+        op.get(dt, cache_mode="w")
+        assert call_counter["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_async_operation_cache_mode(self, tmp_path):
+        """Async operation methods accept cache_mode parameter."""
+        call_counter = {"count": 0}
+
+        def fetch_data(start_dt, end_dt):
+            call_counter["count"] += 1
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": "A",
+                    "value": 1.0,
+                })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        # First call populates cache
+        await op.aget_range(start, end)
+        assert call_counter["count"] == 1
+
+        # cache_mode="w" forces refresh
+        await op.aget_range(start, end, cache_mode="w")
+        assert call_counter["count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_async_operation_get_cache_mode(self, tmp_path):
+        """Async operation.aget() accepts cache_mode parameter."""
+        call_counter = {"count": 0}
+
+        def fetch_data(start_dt, end_dt):
+            call_counter["count"] += 1
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": "A",
+                    "value": 1.0,
+                })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        dt = datetime(2024, 1, 15)
+
+        # First call populates cache
+        await op.aget(dt)
+        assert call_counter["count"] == 1
+
+        # cache_mode="w" forces refresh
+        await op.aget(dt, cache_mode="w")
+        assert call_counter["count"] == 2
+
+    def test_operation_columns_parameter(self, tmp_path):
+        """Operation.get_range() accepts columns parameter."""
+        def fetch_data(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                records.append({
+                    "as_of_date": dt.to_pydatetime(),
+                    "id": "A",
+                    "value": 1.0,
+                    "price": 100.0,
+                    "volume": 1000,
+                })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        # Request only specific columns
+        result = op.get_range(start, end, columns=["value"])
+
+        # Rolling operation should only have the requested column
+        assert "value" in result.columns
+        assert "price" not in result.columns
+        assert "volume" not in result.columns
+
+    def test_operation_filters_parameter(self, tmp_path):
+        """Operation.get_range() accepts filters parameter."""
+        def fetch_data(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in ["A", "B", "C"]:
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": 1.0 if id_ == "A" else 2.0,
+                    })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        # Filter at the source level
+        result = op.get_range(start, end, filters=[("id", "=", "A")])
+
+        # Result should only contain id="A"
+        ids = result.index.get_level_values("id").unique().tolist()
+        assert ids == ["A"]
+
+    def test_operation_get_with_columns_and_filters(self, tmp_path):
+        """Operation.get() accepts columns and filters parameters."""
+        def fetch_data(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in ["A", "B"]:
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": 1.0,
+                        "price": 100.0,
+                    })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        op = Rolling(frame, window=2)
+
+        dt = datetime(2024, 1, 15)
+
+        result = op.get(dt, columns=["value"], filters=[("id", "=", "A")])
+
+        assert "value" in result.columns
+        assert "price" not in result.columns
+        ids = result.index.get_level_values("id").unique().tolist()
+        assert ids == ["A"]
+
+    def test_operation_columns_filters_propagate_through_chain(self, tmp_path):
+        """columns and filters propagate through chained operations."""
+        def fetch_data(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in ["A", "B", "C"]:
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": 1.0,
+                        "price": 100.0,
+                        "volume": 1000,
+                    })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_data, {}, cache_dir=tmp_path)
+        # Chain multiple operations
+        op = frame.rolling(2).shift(1).abs()
+
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 10)
+
+        result = op.get_range(
+            start, end,
+            columns=["value"],
+            filters=[("id", "in", ["A", "B"])],
+        )
+
+        # Check columns
+        assert "value" in result.columns
+        assert "price" not in result.columns
+
+        # Check filters
+        ids = result.index.get_level_values("id").unique().tolist()
+        assert set(ids) == {"A", "B"}

@@ -3,21 +3,7 @@
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from frame.ops.binary import Add, Div, Mul, Pow, Sub
-    from frame.ops.conversion import ToPandas, ToPolars
-    from frame.ops.unary import (
-        Abs,
-        Clip,
-        Diff,
-        Fillna,
-        Filter,
-        Pct,
-        Rolling,
-        Select,
-        Shift,
-        Winsorize,
-        Zscore,
-    )
+    from frame.core import Frame
 
 
 class APIMixin:
@@ -26,7 +12,7 @@ class APIMixin:
     # Unary operations
     def rolling(
         self, window: int, func: str = "mean", min_periods: int | None = None
-    ) -> "Rolling":
+    ) -> "Frame":
         """Apply rolling window operation.
 
         Args:
@@ -35,13 +21,13 @@ class APIMixin:
             min_periods: Minimum observations required. Defaults to window size.
 
         Returns:
-            Rolling operation wrapping this Frame/Operation.
+            Frame with rolling window transformation applied.
         """
         from frame.ops.unary import Rolling
 
         return Rolling(self, window=window, func=func, min_periods=min_periods)
 
-    def shift(self, periods: int = 1) -> "Shift":
+    def shift(self, periods: int = 1) -> "Frame":
         """Apply shift/lag operation.
 
         Args:
@@ -49,62 +35,62 @@ class APIMixin:
                      negative shifts backward (lead).
 
         Returns:
-            Shift operation wrapping this Frame/Operation.
+            Frame with shift transformation applied.
         """
         from frame.ops.unary import Shift
 
         return Shift(self, periods=periods)
 
-    def diff(self, periods: int = 1) -> "Diff":
+    def diff(self, periods: int = 1) -> "Frame":
         """Apply difference operation.
 
         Args:
             periods: Number of periods for difference calculation.
 
         Returns:
-            Diff operation wrapping this Frame/Operation.
+            Frame with difference transformation applied.
         """
         from frame.ops.unary import Diff
 
         return Diff(self, periods=periods)
 
-    def abs(self) -> "Abs":
+    def abs(self) -> "Frame":
         """Apply absolute value operation.
 
         Returns:
-            Abs operation wrapping this Frame/Operation.
+            Frame with absolute value transformation applied.
         """
         from frame.ops.unary import Abs
 
         return Abs(self)
 
-    def pct_change(self, periods: int = 1) -> "Pct":
+    def pct_change(self, periods: int = 1) -> "Frame":
         """Apply percentage change operation.
 
         Args:
             periods: Number of periods for percentage calculation.
 
         Returns:
-            Pct operation wrapping this Frame/Operation.
+            Frame with percentage change transformation applied.
         """
         from frame.ops.unary import Pct
 
         return Pct(self, periods=periods)
 
-    def select(self, columns: list[str]) -> "Select":
+    def select(self, columns: list[str]) -> "Frame":
         """Select specific columns.
 
         Args:
             columns: List of column names to select.
 
         Returns:
-            Select operation wrapping this Frame/Operation.
+            Frame with column selection applied.
         """
         from frame.ops.unary import Select
 
         return Select(self, columns=columns)
 
-    def filter(self, filters: list[tuple]) -> "Filter":
+    def filter(self, filters: list[tuple]) -> "Frame":
         """Filter rows based on conditions.
 
         Args:
@@ -112,13 +98,13 @@ class APIMixin:
                 Operators: =, ==, !=, <, <=, >, >=, in, not in
 
         Returns:
-            Filter operation wrapping this Frame/Operation.
+            Frame with row filtering applied.
         """
         from frame.ops.unary import Filter
 
         return Filter(self, filters=filters)
 
-    def zscore(self, window: int, min_periods: int | None = None) -> "Zscore":
+    def zscore(self, window: int, min_periods: int | None = None) -> "Frame":
         """Apply rolling z-score (standardization) operation.
 
         Computes the z-score as (x - rolling_mean) / rolling_std for each value.
@@ -128,7 +114,7 @@ class APIMixin:
             min_periods: Minimum observations required. Defaults to window size.
 
         Returns:
-            Zscore operation wrapping this Frame/Operation.
+            Frame with z-score transformation applied.
         """
         from frame.ops.unary import Zscore
 
@@ -136,7 +122,7 @@ class APIMixin:
 
     def clip(
         self, lower: float | None = None, upper: float | None = None
-    ) -> "Clip":
+    ) -> "Frame":
         """Clip values to a specified range.
 
         Values outside the range [lower, upper] are set to the boundary values.
@@ -146,13 +132,13 @@ class APIMixin:
             upper: Upper bound. Values above this are set to upper. None means no upper bound.
 
         Returns:
-            Clip operation wrapping this Frame/Operation.
+            Frame with clipping applied.
         """
         from frame.ops.unary import Clip
 
         return Clip(self, lower=lower, upper=upper)
 
-    def winsorize(self, lower: float = 0.01, upper: float = 0.99) -> "Winsorize":
+    def winsorize(self, lower: float = 0.01, upper: float = 0.99) -> "Frame":
         """Winsorize values to specified percentiles.
 
         Limits extreme values by capping them at the given percentiles.
@@ -164,7 +150,7 @@ class APIMixin:
             upper: Upper percentile (0-1). Values above this percentile are capped.
 
         Returns:
-            Winsorize operation wrapping this Frame/Operation.
+            Frame with winsorization applied.
         """
         from frame.ops.unary import Winsorize
 
@@ -172,7 +158,7 @@ class APIMixin:
 
     def fillna(
         self, value: float | None = None, method: str | None = None
-    ) -> "Fillna":
+    ) -> "Frame":
         """Fill missing values.
 
         Can fill with a scalar value or use a method like forward fill or backward fill.
@@ -183,140 +169,138 @@ class APIMixin:
                 Only one of value or method should be specified.
 
         Returns:
-            Fillna operation wrapping this Frame/Operation.
+            Frame with missing values filled.
         """
         from frame.ops.unary import Fillna
 
         return Fillna(self, value=value, method=method)
 
     # Binary operations
-    def add(self, other: Any) -> "Add":
-        """Add another Frame/Operation or scalar.
+    def add(self, other: Any) -> "Frame":
+        """Add another Frame or scalar.
 
         Args:
             other: Right operand.
 
         Returns:
-            Add operation.
+            Frame with addition applied.
         """
         from frame.ops.binary import Add
 
         return Add(self, other)
 
-    def sub(self, other: Any) -> "Sub":
-        """Subtract another Frame/Operation or scalar.
+    def sub(self, other: Any) -> "Frame":
+        """Subtract another Frame or scalar.
 
         Args:
             other: Right operand.
 
         Returns:
-            Sub operation.
+            Frame with subtraction applied.
         """
         from frame.ops.binary import Sub
 
         return Sub(self, other)
 
-    def mul(self, other: Any) -> "Mul":
-        """Multiply by another Frame/Operation or scalar.
+    def mul(self, other: Any) -> "Frame":
+        """Multiply by another Frame or scalar.
 
         Args:
             other: Right operand.
 
         Returns:
-            Mul operation.
+            Frame with multiplication applied.
         """
         from frame.ops.binary import Mul
 
         return Mul(self, other)
 
-    def div(self, other: Any) -> "Div":
-        """Divide by another Frame/Operation or scalar.
+    def div(self, other: Any) -> "Frame":
+        """Divide by another Frame or scalar.
 
         Args:
             other: Right operand (denominator).
 
         Returns:
-            Div operation.
+            Frame with division applied.
         """
         from frame.ops.binary import Div
 
         return Div(self, other)
 
-    def pow(self, other: Any) -> "Pow":
+    def pow(self, other: Any) -> "Frame":
         """Raise to a power.
 
         Args:
-            other: Exponent (Frame, Operation, or scalar).
+            other: Exponent (Frame or scalar).
 
         Returns:
-            Pow operation.
+            Frame with power operation applied.
         """
         from frame.ops.binary import Pow
 
         return Pow(self, other)
 
     # Operator overloads
-    def __add__(self, other: Any) -> "Add":
+    def __add__(self, other: Any) -> "Frame":
         """Add operator."""
         return self.add(other)
 
-    def __radd__(self, other: Any) -> "Add":
+    def __radd__(self, other: Any) -> "Frame":
         """Right add operator."""
         return self.add(other)
 
-    def __sub__(self, other: Any) -> "Sub":
+    def __sub__(self, other: Any) -> "Frame":
         """Subtract operator."""
         return self.sub(other)
 
-    def __rsub__(self, other: Any) -> "Add":
+    def __rsub__(self, other: Any) -> "Frame":
         """Right subtract operator: other - self = -self + other."""
         return self.mul(-1).add(other)
 
-    def __mul__(self, other: Any) -> "Mul":
+    def __mul__(self, other: Any) -> "Frame":
         """Multiply operator."""
         return self.mul(other)
 
-    def __rmul__(self, other: Any) -> "Mul":
+    def __rmul__(self, other: Any) -> "Frame":
         """Right multiply operator."""
         return self.mul(other)
 
-    def __truediv__(self, other: Any) -> "Div":
+    def __truediv__(self, other: Any) -> "Frame":
         """Divide operator."""
         return self.div(other)
 
-    def __neg__(self) -> "Mul":
+    def __neg__(self) -> "Frame":
         """Negation operator."""
         return self.mul(-1)
 
-    def __pow__(self, other: Any) -> "Pow":
+    def __pow__(self, other: Any) -> "Frame":
         """Power operator."""
         return self.pow(other)
 
-    def __rpow__(self, other: Any) -> "Pow":
+    def __rpow__(self, other: Any) -> "Frame":
         """Right power operator: other ** self."""
-        from frame.ops.binary import Pow
-
         # For rpow, we need to create a scalar raised to the power of self
         # This is tricky since we can't easily represent a scalar as a Frame
         # Instead, we'll implement it as: other ** self
         # But this requires the scalar to be the base, not the exponent
         # For now, raise NotImplementedError for scalar ** Frame
         raise NotImplementedError(
-            "Scalar ** Frame/Operation is not supported. Use frame.pow(scalar) instead."
+            "Scalar ** Frame is not supported. Use frame.pow(scalar) instead."
         )
 
     # Backend conversion
-    def to_backend(self, backend: str) -> "ToPandas | ToPolars":
+    def to_backend(self, backend: str) -> "Frame":
         """Return a conversion operation that outputs data in the specified backend format.
 
-        This is a convenience method that wraps the Frame/Operation with a ToPandas or ToPolars
+        This is a convenience method that wraps the Frame with a ToPandas or ToPolars
         operation, allowing easy backend switching while preserving lazy evaluation.
 
         Args:
             backend: Target backend - "pandas" or "polars"
 
         Returns:
-            A ToPandas or ToPolars operation wrapping this Frame/Operation
+            Frame that converts output to the specified backend format.
 
         Example:
             polars_frame = Frame(fetch_func, backend="polars")

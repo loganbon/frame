@@ -19,7 +19,7 @@ from frame.mixins import APIMixin
 from frame.proxy import LazyFrame
 
 if TYPE_CHECKING:
-    from frame.ops.concat import Concat
+    pass
 
 
 class Frame(APIMixin):
@@ -30,9 +30,11 @@ class Frame(APIMixin):
     concurrent nested Frame resolution.
     """
 
+    _is_source = True  # Class attribute: Frame is a data source
+
     def __init__(
         self,
-        func: Callable[..., Any],
+        func: Callable[..., Any] | None = None,
         kwargs: dict[str, Any] | None = None,
         backend: Literal["pandas", "polars"] = "pandas",
         cache_dir: Path | str | None = None,
@@ -46,7 +48,8 @@ class Frame(APIMixin):
 
         Args:
             func: Function that fetches data. Must accept start_dt and end_dt
-                  as first two positional arguments, plus any kwargs.
+                  as first two positional arguments, plus any kwargs. Can be None
+                  for Operation subclasses which don't fetch data directly.
             kwargs: Additional keyword arguments to pass to func.
             backend: DataFrame backend to use ("pandas" or "polars").
             cache_dir: Directory for parquet cache. Defaults to .frame_cache/
@@ -64,6 +67,11 @@ class Frame(APIMixin):
         """
         self._func = func
         self._kwargs = kwargs or {}
+
+        # If no func provided, this is an Operation subclass - skip cache setup
+        if func is None:
+            return
+
         self._backend_name = backend
         self._chunk_by = chunk_by
         self._read_workers = read_workers
@@ -305,17 +313,17 @@ class Frame(APIMixin):
         return self._cache_key
 
     @staticmethod
-    def concat(frames: list["Frame | APIMixin"]) -> "Concat":
+    def concat(frames: list["Frame | APIMixin"]) -> "Frame":
         """Create a Concat operation that combines multiple frames.
 
-        Returns an Operation that, when get_range is called, fetches all
+        Returns a Frame that, when get_range is called, fetches all
         input frames in parallel (via batching) and concatenates the results.
 
         Args:
-            frames: List of Frame or Operation objects to concatenate.
+            frames: List of Frame objects to concatenate.
 
         Returns:
-            Concat operation that can be used like any other Frame/Operation.
+            Frame that concatenates the inputs.
 
         Example:
             prices = Frame(fetch_prices, {"ticker": "AAPL"})
