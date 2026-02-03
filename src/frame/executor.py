@@ -3,6 +3,7 @@
 import asyncio
 import contextvars
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -36,12 +37,13 @@ def reset_batch_context(token: contextvars.Token) -> None:
 
 def _is_lazy_operation(item: Any) -> bool:
     """Check if item is a LazyOperation (avoid circular import)."""
-    return hasattr(item, "_input_lazies")
+    return "_input_lazies" in getattr(item, "__dict__", {})
 
 
 def _is_lazy_frame(item: Any) -> bool:
     """Check if item is a LazyFrame (avoid circular import)."""
-    return hasattr(item, "_frame") and not _is_lazy_operation(item)
+    d = getattr(item, "__dict__", {})
+    return "_frame" in d and "_input_lazies" not in d
 
 
 def _resolve_lazy_frame(item: "LazyFrame") -> Any:
@@ -198,4 +200,48 @@ async def execute_with_batching_async(
         await resolve_batch_async(batch)
         return result
     finally:
+        reset_batch_context(token)
+
+
+@contextmanager
+def batch():
+    """Context manager for batching lazy frame operations.
+
+    All LazyFrame and LazyOperation objects created within this context
+    will be collected and resolved in parallel when the context exits.
+
+    Example:
+        with batch():
+            lazy1 = frame1.get_range(start, end)
+            lazy2 = frame2.get_range(start, end)
+        # Both resolved in parallel here
+    """
+    batch_list: list = []
+    token = set_batch_context(batch_list)
+    try:
+        yield batch_list
+    finally:
+        resolve_batch_sync(batch_list)
+        reset_batch_context(token)
+
+
+@asynccontextmanager
+async def async_batch():
+    """Async context manager for batching lazy frame operations.
+
+    All LazyFrame and LazyOperation objects created within this context
+    will be collected and resolved in parallel using asyncio when the context exits.
+
+    Example:
+        async with async_batch():
+            lazy1 = frame1.get_range(start, end)
+            lazy2 = frame2.get_range(start, end)
+        # Both resolved in parallel here
+    """
+    batch_list: list = []
+    token = set_batch_context(batch_list)
+    try:
+        yield batch_list
+    finally:
+        await resolve_batch_async(batch_list)
         reset_batch_context(token)

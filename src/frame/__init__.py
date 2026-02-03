@@ -11,6 +11,7 @@ from frame.config import (
     reset_frame_config,
 )
 from frame.core import Frame
+from frame.executor import async_batch, batch
 from frame.memory_cache import (
     CacheConfig,
     CacheStats,
@@ -68,6 +69,8 @@ __all__ = [
     "get_default_cache_dir",
     "get_default_parent_cache_dirs",
     "reset_frame_config",
+    "batch",
+    "async_batch",
     *ops_all,
 ]
 __version__ = "0.1.0"

@@ -8,7 +8,13 @@ import pandas as pd
 import pytest
 
 from frame import Frame, LazyFrame
-from frame.executor import set_batch_context, reset_batch_context
+from frame.executor import (
+    set_batch_context,
+    reset_batch_context,
+    resolve_batch_sync,
+    _is_lazy_operation,
+    _is_lazy_frame,
+)
 
 
 @pytest.fixture
@@ -217,3 +223,149 @@ class TestAsyncNestedFrames:
         assert len(results) == 2
         assert len(results[0]) == 5
         assert len(results[1]) == 5
+
+
+class TestBatchResolutionTiming:
+    """Test that batch resolution doesn't trigger premature execution."""
+
+    def test_type_checking_does_not_resolve(self, price_func, cache_dir):
+        """_is_lazy_operation and _is_lazy_frame should not trigger resolution."""
+        frame = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        batch = []
+        token = set_batch_context(batch)
+        try:
+            lazy = frame.get_range(start, end)
+
+            # These checks should NOT trigger resolution
+            assert _is_lazy_frame(lazy)
+            assert not _is_lazy_operation(lazy)
+
+            # LazyFrame should still be unresolved
+            assert not lazy._resolved
+            assert lazy._data is None
+        finally:
+            reset_batch_context(token)
+
+    def test_batch_items_stay_lazy_until_resolution(self, price_func, cache_dir):
+        """Items in batch should not resolve until resolve_batch_sync is called."""
+        frame = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        batch = []
+        token = set_batch_context(batch)
+        try:
+            lazy1 = frame.get_range(start, end)
+            lazy2 = frame.get_range(start, end)
+
+            # Both should be in batch and unresolved
+            assert len(batch) == 2
+            assert not lazy1._resolved
+            assert not lazy2._resolved
+
+            # Now resolve
+            resolve_batch_sync(batch)
+
+            # Both should now be resolved
+            assert lazy1._resolved
+            assert lazy2._resolved
+        finally:
+            reset_batch_context(token)
+
+
+class TestBatchContextManager:
+    """Test the batch context manager."""
+
+    def test_batch_context_manager_resolves_on_exit(self, price_func, cache_dir):
+        """Items should be resolved when exiting the context."""
+        from frame import batch
+
+        frame = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        with batch():
+            lazy1 = frame.get_range(start, end)
+            lazy2 = frame.get_range(start, end)
+
+            # Should be unresolved inside context
+            assert not lazy1._resolved
+            assert not lazy2._resolved
+
+        # Should be resolved after context exits
+        assert lazy1._resolved
+        assert lazy2._resolved
+
+    def test_batch_context_manager_yields_batch_list(self, price_func, cache_dir):
+        """Context manager should yield the batch list."""
+        from frame import batch
+
+        frame = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        with batch() as batch_list:
+            lazy = frame.get_range(start, end)
+            assert len(batch_list) == 1
+            assert batch_list[0] is lazy
+
+    def test_batch_context_manager_parallel_resolution(self, price_func, cache_dir, call_log):
+        """Multiple frames should be fetched (enables parallel resolution)."""
+        from frame import batch
+
+        frame1 = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        frame2 = Frame(price_func, {"ticker": "GOOGL"}, cache_dir=cache_dir)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        with batch():
+            lazy1 = frame1.get_range(start, end)
+            lazy2 = frame2.get_range(start, end)
+
+        # Both should have been called
+        assert len(call_log) == 2
+        tickers = [c[1] for c in call_log]
+        assert "AAPL" in tickers
+        assert "GOOGL" in tickers
+
+
+class TestAsyncBatchContextManager:
+    """Test the async batch context manager."""
+
+    @pytest.mark.asyncio
+    async def test_async_batch_resolves_on_exit(self, price_func, cache_dir):
+        """Items should be resolved when exiting the async context."""
+        from frame import async_batch
+
+        frame = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        async with async_batch():
+            lazy1 = frame.get_range(start, end)
+            lazy2 = frame.get_range(start, end)
+
+            # Should be unresolved inside context
+            assert not lazy1._resolved
+            assert not lazy2._resolved
+
+        # Should be resolved after context exits
+        assert lazy1._resolved
+        assert lazy2._resolved
+
+    @pytest.mark.asyncio
+    async def test_async_batch_yields_batch_list(self, price_func, cache_dir):
+        """Async context manager should yield the batch list."""
+        from frame import async_batch
+
+        frame = Frame(price_func, {"ticker": "AAPL"}, cache_dir=cache_dir)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        async with async_batch() as batch_list:
+            lazy = frame.get_range(start, end)
+            assert len(batch_list) == 1
+            assert batch_list[0] is lazy
