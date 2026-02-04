@@ -1,6 +1,6 @@
 """Tests for calendar functionality."""
 
-from datetime import date, datetime
+from datetime import datetime
 
 import pandas as pd
 import pytest
@@ -20,8 +20,8 @@ class TestDateCalendar:
         dates = list(cal.dt_range(start, end))
 
         assert len(dates) == 7
-        assert dates[0] == date(2024, 1, 1)
-        assert dates[-1] == date(2024, 1, 7)
+        assert dates[0] == datetime(2024, 1, 1)
+        assert dates[-1] == datetime(2024, 1, 7)
 
     def test_dt_range_includes_weekends(self):
         """DateCalendar includes Saturday and Sunday."""
@@ -33,8 +33,8 @@ class TestDateCalendar:
         dates = list(cal.dt_range(start, end))
 
         assert len(dates) == 4
-        assert date(2024, 1, 6) in dates  # Saturday
-        assert date(2024, 1, 7) in dates  # Sunday
+        assert datetime(2024, 1, 6) in dates  # Saturday
+        assert datetime(2024, 1, 7) in dates  # Sunday
 
     def test_dt_offset_positive(self):
         """dt_offset moves forward by N days."""
@@ -78,8 +78,8 @@ class TestBDateCalendar:
 
         # Should have 5 business days (Mon-Fri)
         assert len(dates) == 5
-        assert date(2024, 1, 6) not in dates  # Saturday
-        assert date(2024, 1, 7) not in dates  # Sunday
+        assert datetime(2024, 1, 6) not in dates  # Saturday
+        assert datetime(2024, 1, 7) not in dates  # Sunday
 
     def test_dt_range_only_business_days(self):
         """BDateCalendar returns only weekdays."""
@@ -187,7 +187,7 @@ class TestCalendarWithFrame:
         call_counter = {"dates_requested": []}
 
         def tracking_func(start_dt, end_dt):
-            call_counter["dates_requested"].append((start_dt.date(), end_dt.date()))
+            call_counter["dates_requested"].append((start_dt, end_dt))
             dates = pd.date_range(start_dt, end_dt, freq="D")
             records = []
             for dt in dates:
@@ -259,9 +259,8 @@ class TestCalendarABC:
 
             def dt_range(self, start_dt, end_dt):
                 from datetime import timedelta
-                current = start_dt.date()
-                end_date = end_dt.date()
-                while current <= end_date:
+                current = start_dt
+                while current <= end_dt:
                     if current.weekday() < 4:  # Mon-Thu = 0-3
                         yield current
                     current += timedelta(days=1)
@@ -284,6 +283,6 @@ class TestCalendarABC:
 
         # Should only have Mon-Thu (4 days)
         assert len(dates) == 4
-        assert date(2024, 1, 5) not in dates  # Friday
-        assert date(2024, 1, 6) not in dates  # Saturday
-        assert date(2024, 1, 7) not in dates  # Sunday
+        assert datetime(2024, 1, 5) not in dates  # Friday
+        assert datetime(2024, 1, 6) not in dates  # Saturday
+        assert datetime(2024, 1, 7) not in dates  # Sunday

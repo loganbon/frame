@@ -138,9 +138,10 @@ class DtShift(Operation):
         })
 
         # Join to get new dates, then drop old and rename
+        # Note: right_on column is not included in join result, only drop left key
         result = (
             df.join(date_mapping, left_on="as_of_date", right_on="as_of_date_old")
-            .drop("as_of_date", "as_of_date_old")
+            .drop("as_of_date")
             .rename({"as_of_date_new": "as_of_date"})
         )
 

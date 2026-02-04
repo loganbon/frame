@@ -40,6 +40,7 @@ class Frame(APIMixin):
         read_workers: int | None = None,
         fetch_workers: int | None = 1,
         calendar: Calendar | None = None,
+        sentinel_id: int | str = -1,
     ) -> None:
         """Initialize a Frame.
 
@@ -61,6 +62,9 @@ class Frame(APIMixin):
                 Set higher (2-4) for APIs that support parallel requests.
             calendar: Calendar for determining valid dates. Defaults to
                 BDateCalendar (business dates, excludes weekends).
+            sentinel_id: ID value used for sentinel rows that mark dates with
+                no data. Default is -1. Use a custom value if -1 conflicts
+                with real IDs in your data.
         """
         self._func = func
         self._kwargs = kwargs or {}
@@ -103,6 +107,7 @@ class Frame(APIMixin):
             read_workers=self._read_workers,
             fetch_workers=self._fetch_workers,
             calendar=self._calendar,
+            sentinel_id=sentinel_id,
         )
         self._cache_key = self._cache._cache_key
         self._log = get_logger(__name__).bind(

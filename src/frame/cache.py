@@ -49,6 +49,7 @@ class CacheManager:
         read_workers: int | None = None,
         fetch_workers: int | None = 1,
         calendar: "Calendar | None" = None,
+        sentinel_id: int | str = -1,
     ):
         from frame.calendar import BDateCalendar
 
@@ -61,6 +62,7 @@ class CacheManager:
         self._read_workers = read_workers  # None = ThreadPoolExecutor default (high)
         self._fetch_workers = fetch_workers  # Default 1 = sequential (safe for APIs)
         self._calendar = calendar or BDateCalendar()
+        self._sentinel_id = sentinel_id
         self._cache_key = self._compute_cache_key()
         self._chunk_dir = self._cache_dir / self._cache_key
         self._parent_chunk_dirs = [
@@ -243,8 +245,7 @@ class CacheManager:
         ):
             import polars as pl
 
-            date_list = list(dates)
-            return df.filter(pl.col("as_of_date").dt.date().is_in(date_list))
+            return df.filter(pl.col("as_of_date").is_in(dates))
 
         return df
 
@@ -268,8 +269,144 @@ class CacheManager:
         ):
             import polars as pl
 
-            date_list = list(dates)
-            return df.filter(~pl.col("as_of_date").dt.date().is_in(date_list))
+            return df.filter(~pl.col("as_of_date").is_in(dates))
+
+        return df
+
+    def _create_sentinel_rows(
+        self,
+        dates: set[datetime],
+        schema_df: Any,
+    ) -> Any:
+        """Create sentinel rows for dates with no data.
+
+        Args:
+            dates: Missing dates to create sentinels for
+            schema_df: DataFrame to get column schema from
+
+        Returns:
+            DataFrame with sentinel rows
+        """
+        if self._backend.is_empty(schema_df) or not dates:
+            return self._backend.empty()
+
+        # Pandas implementation (MultiIndex)
+        if hasattr(schema_df, "index") and hasattr(schema_df.index, "names"):
+            if "as_of_date" in schema_df.index.names:
+                import numpy as np
+                import pandas as pd
+
+                # Get the dtype of the id column to ensure type consistency
+                if "id" in schema_df.index.names:
+                    id_values = schema_df.index.get_level_values("id")
+                    id_dtype = id_values.dtype
+                    # Convert sentinel_id to match the dtype
+                    if pd.api.types.is_string_dtype(id_dtype) or id_dtype == object:
+                        sentinel_id = str(self._sentinel_id)
+                    else:
+                        sentinel_id = self._sentinel_id
+                else:
+                    sentinel_id = self._sentinel_id
+
+                data_columns = list(schema_df.columns)
+                records = []
+                for dt in dates:
+                    record = {"as_of_date": dt, "id": sentinel_id}
+                    for col in data_columns:
+                        record[col] = np.nan
+                    records.append(record)
+                df = pd.DataFrame(records)
+                return df.set_index(["as_of_date", "id"])
+
+        # Polars implementation (columns)
+        if hasattr(schema_df, "columns") and "as_of_date" in (
+            schema_df.columns if hasattr(schema_df.columns, "__iter__") else []
+        ):
+            import polars as pl
+
+            # Get the dtype of the id column to ensure type consistency
+            if "id" in schema_df.columns:
+                id_dtype = schema_df["id"].dtype
+                if id_dtype == pl.Utf8 or id_dtype == pl.String:
+                    sentinel_id = str(self._sentinel_id)
+                else:
+                    sentinel_id = self._sentinel_id
+            else:
+                sentinel_id = self._sentinel_id
+
+            data_columns = [
+                c for c in schema_df.columns if c not in ["as_of_date", "id"]
+            ]
+            return pl.DataFrame(
+                {
+                    "as_of_date": list(dates),
+                    "id": [sentinel_id] * len(dates),
+                    **{col: [None] * len(dates) for col in data_columns},
+                }
+            )
+
+        return self._backend.empty()
+
+    def _get_schema_for_sentinels(
+        self,
+        fetched_data: Any,
+        chunk_start: datetime,
+    ) -> Any | None:
+        """Get schema DataFrame for creating sentinel rows.
+
+        Priority: fetched_data > existing cache > parent caches > None
+        """
+        if not self._backend.is_empty(fetched_data):
+            return fetched_data
+
+        # Try existing cache
+        chunk_path = self._chunk_path(chunk_start)
+        if chunk_path.exists():
+            existing = self._backend.read_parquet(chunk_path)
+            if not self._backend.is_empty(existing):
+                return existing
+
+        # Try parent caches
+        for parent_dir in self._parent_chunk_dirs:
+            parent_path = self._chunk_path(chunk_start, chunk_dir=parent_dir)
+            if parent_path.exists():
+                existing = self._backend.read_parquet(parent_path)
+                if not self._backend.is_empty(existing):
+                    return existing
+
+        return None
+
+    def _filter_out_sentinels(self, df: Any) -> Any:
+        """Remove sentinel rows from DataFrame."""
+        if self._backend.is_empty(df):
+            return df
+
+        # Pandas (MultiIndex)
+        if hasattr(df, "index") and hasattr(df.index, "names"):
+            if "id" in df.index.names:
+                import pandas as pd
+
+                ids = df.index.get_level_values("id")
+                id_dtype = ids.dtype
+                # Use appropriate sentinel type based on column dtype
+                if pd.api.types.is_string_dtype(id_dtype) or id_dtype == object:
+                    sentinel_val = str(self._sentinel_id)
+                else:
+                    sentinel_val = self._sentinel_id
+                return df[ids != sentinel_val]
+
+        # Polars
+        if hasattr(df, "filter") and hasattr(df, "columns"):
+            if "id" in df.columns:
+                import polars as pl
+
+                # Use appropriate sentinel type based on column dtype
+                id_dtype = df["id"].dtype
+                if id_dtype == pl.Utf8 or id_dtype == pl.String:
+                    sentinel_val = str(self._sentinel_id)
+                else:
+                    sentinel_val = self._sentinel_id
+                return df.filter(pl.col("id") != sentinel_val)
 
         return df
 
@@ -285,6 +422,9 @@ class CacheManager:
         Resolve chunk data across cache hierarchy, tracking which dates are found.
 
         Returns: (DataFrame with found data, set of still-missing dates)
+
+        Note: Sentinel rows (marking dates with no data) are recognized as "resolved"
+        but filtered out from returned data.
         """
         frames = []
         remaining_dates = requested_dates.copy()
@@ -313,8 +453,11 @@ class CacheManager:
                     "cache_hit_at_level", level=level, found_count=len(found_dates)
                 )
                 df = self._filter_to_dates(df, found_dates)
-                if not self._backend.is_empty(df):
-                    frames.append(df)
+                # Filter out sentinel rows before adding to result
+                df_without_sentinels = self._filter_out_sentinels(df)
+                if not self._backend.is_empty(df_without_sentinels):
+                    frames.append(df_without_sentinels)
+                # Dates are "resolved" whether they had real data or sentinels
                 remaining_dates -= found_dates
             else:
                 self._log.debug("cache_miss_at_level", level=level)
@@ -354,11 +497,29 @@ class CacheManager:
             **self._kwargs,
         )
 
+        if not self._backend.is_empty(data):
+            # Filter to only the dates we requested (in case func returns more)
+            data = self._filter_to_dates(data, dates)
+
+        # Create sentinel rows for dates that were requested but not returned
+        fetched_dates = self._get_dates_in_df(data)
+        missing_dates = dates - fetched_dates
+
+        if missing_dates:
+            schema_df = self._get_schema_for_sentinels(data, chunk_start)
+            if schema_df is not None:
+                sentinel_df = self._create_sentinel_rows(missing_dates, schema_df)
+                if not self._backend.is_empty(sentinel_df):
+                    if not self._backend.is_empty(data):
+                        data = self._backend.concat([data, sentinel_df])
+                    else:
+                        data = sentinel_df
+                    self._log.debug(
+                        "sentinel_rows_created", count=len(missing_dates)
+                    )
+
         if self._backend.is_empty(data):
             return data
-
-        # Filter to only the dates we requested (in case func returns more)
-        data = self._filter_to_dates(data, dates)
 
         # Merge with existing primary cache chunk
         # For each date in new data, we replace ALL rows for that date
@@ -389,7 +550,8 @@ class CacheManager:
         memory_cache.invalidate(chunk_path)
 
         self._log.debug("cache_chunk_written", chunk_path=str(chunk_path))
-        return data
+        # Return only the real data (filter out sentinels for the caller)
+        return self._filter_out_sentinels(data)
 
     def has_chunk(self, chunk_start: datetime, chunk_end: datetime) -> bool:
         """Check if a chunk exists in cache (primary or any parent)."""
@@ -625,6 +787,8 @@ class CacheManager:
                         chunk_start, chunk_end, columns=columns, filters=filters
                     )
                     live_df = self._filter_to_dates(live_df, missing_dates)
+                    # Filter out sentinel rows
+                    live_df = self._filter_out_sentinels(live_df)
 
                     if not self._backend.is_empty(live_df):
                         if not self._backend.is_empty(df):
@@ -821,4 +985,5 @@ class CacheManager:
     ) -> Any:
         """Read a chunk and filter to specific dates."""
         df = self.read_chunk(chunk_start, chunk_end, columns=columns, filters=filters)
-        return self._filter_to_dates(df, dates)
+        df = self._filter_to_dates(df, dates)
+        return self._filter_out_sentinels(df)

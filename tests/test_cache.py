@@ -998,3 +998,290 @@ class TestOperationCacheKey:
         f2 = Frame(derived_fetch, {"source_op": op2}, cache_dir=cache_dir)
 
         assert f1._cache_key != f2._cache_key
+
+
+class TestSentinelRows:
+    """Test sentinel row functionality for tracking known missing dates."""
+
+    def test_sentinel_prevents_refetch(self, cache_dir):
+        """Sentinel rows prevent repeated fetches for known-missing dates."""
+        call_count = 0
+
+        def sparse_fetch(start_dt, end_dt):
+            nonlocal call_count
+            call_count += 1
+            # Only return data for Mondays
+            dates = pd.bdate_range(start_dt, end_dt)
+            records = [
+                {"as_of_date": d.to_pydatetime(), "id": 1, "value": 100}
+                for d in dates
+                if d.weekday() == 0
+            ]
+            if not records:
+                return pd.DataFrame()
+            df = pd.DataFrame(records)
+            return df.set_index(["as_of_date", "id"])
+
+        frame = Frame(sparse_fetch, cache_dir=cache_dir)
+
+        # First call fetches and caches (including sentinels for non-Mondays)
+        result1 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 7))
+        assert call_count == 1
+
+        # Second call should NOT re-fetch (sentinels mark other days as resolved)
+        result2 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 7))
+        assert call_count == 1  # No re-fetch!
+
+        pd.testing.assert_frame_equal(result1, result2)
+
+    def test_sentinel_invisible_to_user(self, cache_dir):
+        """Sentinel rows never appear in returned data."""
+
+        def sparse_fetch(start_dt, end_dt):
+            # Only return data for first day
+            return pd.DataFrame(
+                {
+                    "as_of_date": [datetime(2024, 1, 2)],
+                    "id": [1],
+                    "value": [100],
+                }
+            ).set_index(["as_of_date", "id"])
+
+        frame = Frame(sparse_fetch, cache_dir=cache_dir)
+
+        # Request range where only one day has data
+        result = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+
+        # Sentinel ID (-1) should never appear in result
+        ids = result.index.get_level_values("id")
+        assert -1 not in ids
+        assert len(result) == 1  # Only the actual data row
+
+    def test_custom_sentinel_id(self, cache_dir):
+        """Custom sentinel_id is used instead of default."""
+        call_count = 0
+
+        def sparse_fetch(start_dt, end_dt):
+            nonlocal call_count
+            call_count += 1
+            # Only return data for first business day
+            dates = pd.bdate_range(start_dt, end_dt)
+            if len(dates) == 0:
+                return pd.DataFrame()
+            return pd.DataFrame(
+                {
+                    "as_of_date": [dates[0].to_pydatetime()],
+                    "id": ["A"],  # String ID
+                    "value": [100],
+                }
+            ).set_index(["as_of_date", "id"])
+
+        # Use custom sentinel ID for string-based IDs
+        frame = Frame(sparse_fetch, cache_dir=cache_dir, sentinel_id="__missing__")
+
+        result1 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 1
+
+        # Should not refetch
+        result2 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 1
+
+        # Custom sentinel should not appear
+        ids = result1.index.get_level_values("id")
+        assert "__missing__" not in ids
+
+    def test_empty_fetch_no_schema_still_refetches(self, cache_dir):
+        """Empty fetch with no existing schema causes refetch on subsequent calls."""
+        call_count = 0
+
+        def always_empty_fetch(start_dt, end_dt):
+            nonlocal call_count
+            call_count += 1
+            return pd.DataFrame()  # Always returns empty
+
+        frame = Frame(always_empty_fetch, cache_dir=cache_dir)
+
+        # First call - fetches but nothing to cache
+        result1 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 1
+        assert len(result1) == 0
+
+        # Second call - still needs to fetch since no schema was available
+        # for creating sentinels
+        result2 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 2
+        assert len(result2) == 0
+
+    def test_sentinel_with_existing_cache_schema(self, cache_dir):
+        """Sentinels can be created using schema from existing cache."""
+        call_count = 0
+
+        def fetch_with_gaps(start_dt, end_dt):
+            nonlocal call_count
+            call_count += 1
+            # First call returns data, subsequent calls return empty
+            if call_count == 1:
+                return pd.DataFrame(
+                    {
+                        "as_of_date": [datetime(2024, 1, 2)],
+                        "id": [1],
+                        "value": [100.0],
+                    }
+                ).set_index(["as_of_date", "id"])
+            return pd.DataFrame()
+
+        frame = Frame(fetch_with_gaps, cache_dir=cache_dir)
+
+        # First call - caches data for Jan 2
+        frame.get_range(datetime(2024, 1, 2), datetime(2024, 1, 2))
+        assert call_count == 1
+
+        # Second call - requests new dates but fetch returns empty
+        # Should still create sentinels using schema from existing cache
+        frame.get_range(datetime(2024, 1, 3), datetime(2024, 1, 5))
+        assert call_count == 2
+
+        # Third call - should NOT refetch since sentinels are in place
+        frame.get_range(datetime(2024, 1, 3), datetime(2024, 1, 5))
+        assert call_count == 2
+
+    def test_sentinel_works_with_filters(self, cache_dir):
+        """Sentinel rows work correctly with row filters."""
+
+        def sparse_fetch(start_dt, end_dt):
+            # Only return data for Jan 2
+            return pd.DataFrame(
+                {
+                    "as_of_date": [datetime(2024, 1, 2)],
+                    "id": [1],
+                    "value": [100],
+                }
+            ).set_index(["as_of_date", "id"])
+
+        frame = Frame(sparse_fetch, cache_dir=cache_dir)
+
+        # First fetch with filter
+        result1 = frame.get_range(
+            datetime(2024, 1, 1),
+            datetime(2024, 1, 5),
+            filters=[("value", ">", 50)],
+        )
+
+        # Sentinel rows should not appear even with filtering
+        ids = result1.index.get_level_values("id")
+        assert -1 not in ids
+
+    def test_sentinel_works_across_chunks(self, cache_dir):
+        """Sentinel rows work correctly across multiple cache chunks."""
+        call_count = 0
+
+        def sparse_fetch(start_dt, end_dt):
+            nonlocal call_count
+            call_count += 1
+            # Only return data for first Monday of each month
+            dates = pd.bdate_range(start_dt, end_dt)
+            records = []
+            seen_months = set()
+            for d in dates:
+                month_key = (d.year, d.month)
+                if d.weekday() == 0 and month_key not in seen_months:
+                    seen_months.add(month_key)
+                    records.append(
+                        {"as_of_date": d.to_pydatetime(), "id": 1, "value": 100}
+                    )
+            if not records:
+                return pd.DataFrame()
+            df = pd.DataFrame(records)
+            return df.set_index(["as_of_date", "id"])
+
+        frame = Frame(sparse_fetch, cache_dir=cache_dir, chunk_by="month")
+
+        # Request spanning 2 months
+        result1 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 2, 29))
+        initial_calls = call_count
+
+        # Should not refetch either month
+        result2 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 2, 29))
+        assert call_count == initial_calls
+
+        pd.testing.assert_frame_equal(result1, result2)
+
+    def test_write_mode_refreshes_sentinels(self, cache_dir):
+        """Write mode clears and refreshes sentinel rows."""
+        call_count = 0
+
+        def evolving_fetch(start_dt, end_dt):
+            nonlocal call_count
+            call_count += 1
+            # Later calls return more data
+            if call_count == 1:
+                return pd.DataFrame(
+                    {
+                        "as_of_date": [datetime(2024, 1, 2)],
+                        "id": [1],
+                        "value": [100],
+                    }
+                ).set_index(["as_of_date", "id"])
+            else:
+                # Now Jan 3 has data too
+                return pd.DataFrame(
+                    {
+                        "as_of_date": [datetime(2024, 1, 2), datetime(2024, 1, 3)],
+                        "id": [1, 1],
+                        "value": [100, 200],
+                    }
+                ).set_index(["as_of_date", "id"])
+
+        frame = Frame(evolving_fetch, cache_dir=cache_dir)
+
+        # First call - only Jan 2 has data
+        result1 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 1
+        assert len(result1) == 1
+
+        # Normal read should not refetch (sentinels in place)
+        result2 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 1
+
+        # Write mode forces refresh
+        result3 = frame.get_range(
+            datetime(2024, 1, 1), datetime(2024, 1, 5), cache_mode="w"
+        )
+        assert call_count == 2
+        assert len(result3) == 2  # Now has Jan 2 and Jan 3
+
+    def test_sentinel_polars_backend(self, tmp_path):
+        """Sentinel rows work with polars backend."""
+        import polars as pl
+
+        cache_dir = tmp_path / "cache"
+        call_count = 0
+
+        def sparse_polars_fetch(start_dt, end_dt):
+            nonlocal call_count
+            call_count += 1
+            # Only return data for first business day
+            dates = pd.bdate_range(start_dt, end_dt)
+            if len(dates) == 0:
+                return pl.DataFrame()
+            return pl.DataFrame(
+                {
+                    "as_of_date": [dates[0].to_pydatetime()],
+                    "id": [1],
+                    "value": [100.0],
+                }
+            )
+
+        frame = Frame(sparse_polars_fetch, cache_dir=cache_dir, backend="polars")
+
+        # First call fetches and caches (including sentinels for missing dates)
+        result1 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 1
+
+        # Second call should NOT re-fetch (sentinels mark other days as resolved)
+        result2 = frame.get_range(datetime(2024, 1, 1), datetime(2024, 1, 5))
+        assert call_count == 1  # No re-fetch!
+
+        # Sentinel ID should not appear in result
+        assert -1 not in result1["id"].to_list()
+        assert len(result1) == 1

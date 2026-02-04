@@ -320,7 +320,6 @@ class TestDtShiftIntegration:
 class TestDtShiftPolars:
     """Test DtShift with polars backend."""
 
-    @pytest.mark.xfail(reason="Polars backend date filtering is currently broken in cache.py")
     def test_dtshift_polars_backend(self, cache_dir):
         """Test DtShift with polars DataFrame."""
         import polars as pl
