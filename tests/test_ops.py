@@ -401,6 +401,127 @@ class TestBinaryOperations:
         assert (result["value"] == original["value"] ** 2.0).all()
 
 
+class TestBackendNormalization:
+    """Test automatic backend normalization in operations."""
+
+    def test_add_pandas_and_polars(self, cache_dir):
+        """Test Add with pandas frame + polars frame normalizes to pandas."""
+        import polars as pl
+
+        def fetch_pandas(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in range(2):
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": 10.0,
+                    })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        def fetch_polars(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in range(2):
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": 5.0,
+                    })
+            return pl.DataFrame(records)
+
+        pandas_frame = Frame(fetch_pandas, cache_dir=cache_dir / "pandas")
+        polars_frame = Frame(fetch_polars, backend="polars", cache_dir=cache_dir / "polars")
+
+        # pandas first - result should be pandas
+        add = Add(pandas_frame, polars_frame)
+        result = add.get_range(datetime(2024, 1, 1), datetime(2024, 1, 3))
+
+        assert isinstance(result, pd.DataFrame)
+        assert (result["value"] == 15.0).all()
+
+    def test_add_polars_and_pandas(self, cache_dir):
+        """Test Add with polars frame + pandas frame normalizes to polars."""
+        import polars as pl
+
+        def fetch_pandas(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in range(2):
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": 5.0,
+                    })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        def fetch_polars(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in range(2):
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "value": 10.0,
+                    })
+            return pl.DataFrame(records)
+
+        pandas_frame = Frame(fetch_pandas, cache_dir=cache_dir / "pandas")
+        polars_frame = Frame(fetch_polars, backend="polars", cache_dir=cache_dir / "polars")
+
+        # polars first - result should be polars
+        add = Add(polars_frame, pandas_frame)
+        result = add.get_range(datetime(2024, 1, 1), datetime(2024, 1, 3))
+
+        assert isinstance(result, pl.DataFrame)
+        assert (result["value"] == 15.0).all()
+
+    def test_join_mixed_backends(self, cache_dir):
+        """Test Join with mixed backends normalizes correctly."""
+        import polars as pl
+
+        def fetch_prices_pandas(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in range(2):
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "price": 100.0 + id_,
+                    })
+            return pd.DataFrame(records).set_index(["as_of_date", "id"])
+
+        def fetch_volumes_polars(start_dt, end_dt):
+            dates = pd.date_range(start_dt, end_dt, freq="D")
+            records = []
+            for dt in dates:
+                for id_ in range(2):
+                    records.append({
+                        "as_of_date": dt.to_pydatetime(),
+                        "id": id_,
+                        "volume": 1000 * (id_ + 1),
+                    })
+            return pl.DataFrame(records)
+
+        from frame import Join
+
+        prices = Frame(fetch_prices_pandas, cache_dir=cache_dir / "prices")
+        volumes = Frame(fetch_volumes_polars, backend="polars", cache_dir=cache_dir / "volumes")
+
+        # pandas first - result should be pandas
+        joined = Join(prices, volumes)
+        result = joined.get_range(datetime(2024, 1, 1), datetime(2024, 1, 3))
+
+        assert isinstance(result, pd.DataFrame)
+        assert "price" in result.columns
+        assert "volume" in result.columns
+
+
 class TestChainedOperations:
     """Test chaining multiple operations."""
 

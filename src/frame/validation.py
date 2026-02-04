@@ -4,6 +4,8 @@ from typing import Any
 
 import pandas as pd
 
+from frame.utils import _is_pandas, _is_polars
+
 
 class ValidationError(Exception):
     """Raised when DataFrame validation fails."""
@@ -20,10 +22,9 @@ def validate_dataframe(df: Any) -> None:
     Raises:
         ValidationError: If validation fails
     """
-    # Check for polars
-    if hasattr(df, "lazy"):
+    if _is_polars(df):
         _validate_polars(df)
-    elif isinstance(df, pd.DataFrame):
+    elif _is_pandas(df):
         _validate_pandas(df)
     else:
         raise ValidationError(f"Unknown DataFrame type: {type(df)}")

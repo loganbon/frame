@@ -12,20 +12,7 @@ from typing import Any
 from frame.cache import CacheMode, ChunkBy
 from frame.core import Frame
 from frame.executor import execute_with_batching, execute_with_batching_async, get_current_batch
-
-
-def _is_polars(df: Any) -> bool:
-    """Check if df is a polars DataFrame or LazyFrame."""
-    try:
-        import polars as pl
-        return isinstance(df, (pl.DataFrame, pl.LazyFrame))
-    except ImportError:
-        return False
-
-
-def _is_pandas(df: Any) -> bool:
-    """Check if DataFrame is a pandas DataFrame."""
-    return isinstance(df, pd.DataFrame)
+from frame.utils import _is_pandas, _is_polars
 
 
 def _apply_filters(df: Any, filters: list[tuple]) -> Any:
@@ -189,6 +176,8 @@ class Operation(Frame):
         resolved = [
             li._resolve() if hasattr(li, "_resolve") else li for li in lazy_inputs
         ]
+        # Normalize all inputs to match the first input's backend
+        resolved = self._normalize_backends(resolved)
         result = self._apply(resolved, **self._params)
 
         # Apply columns selection to output (works for both pandas and polars)
@@ -198,6 +187,47 @@ class Operation(Frame):
         # Apply filters to output
         if filters is not None:
             result = _apply_filters(result, filters)
+
+        return result
+
+    def _normalize_backends(self, inputs: list[Any]) -> list[Any]:
+        """Normalize all inputs to match the first input's backend.
+
+        If the first input is pandas, convert all polars inputs to pandas.
+        If the first input is polars, convert all pandas inputs to polars.
+
+        Args:
+            inputs: List of resolved DataFrames.
+
+        Returns:
+            List of DataFrames all using the same backend.
+        """
+        if len(inputs) <= 1:
+            return inputs
+
+        first = inputs[0]
+        first_is_polars = _is_polars(first)
+        first_is_pandas = _is_pandas(first)
+
+        if not first_is_polars and not first_is_pandas:
+            # Unknown type, return as-is
+            return inputs
+
+        result = [first]
+        for df in inputs[1:]:
+            if first_is_polars and _is_pandas(df):
+                # Convert pandas to polars
+                import polars as pl
+                result.append(pl.from_pandas(df.reset_index()))
+            elif first_is_pandas and _is_polars(df):
+                # Convert polars to pandas
+                converted = df.to_pandas()
+                if "as_of_date" in converted.columns and "id" in converted.columns:
+                    converted = converted.set_index(["as_of_date", "id"])
+                result.append(converted)
+            else:
+                # Same backend or unknown, keep as-is
+                result.append(df)
 
         return result
 

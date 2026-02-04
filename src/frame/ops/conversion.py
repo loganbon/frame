@@ -5,6 +5,7 @@ from typing import Any
 import pandas as pd
 
 from frame.ops.base import Operation
+from frame.utils import _is_pandas, _is_polars
 
 try:
     import polars as pl
@@ -28,13 +29,13 @@ class ToPandas(Operation):
 
     def _apply(self, inputs: list[Any], **params: Any) -> pd.DataFrame:
         df = inputs[0]
-        if hasattr(df, "to_pandas"):
+        if _is_polars(df):
             result = df.to_pandas()
             # Set the standard [as_of_date, id] MultiIndex if columns exist
             if "as_of_date" in result.columns and "id" in result.columns:
                 result = result.set_index(["as_of_date", "id"])
             return result
-        if isinstance(df, pd.DataFrame):
+        if _is_pandas(df):
             return df
         raise TypeError(f"Cannot convert {type(df)} to pandas")
 
@@ -55,10 +56,8 @@ class ToPolars(Operation):
             raise ImportError("polars is required for ToPolars operation")
 
         df = inputs[0]
-        if isinstance(df, pl.DataFrame):
+        if _is_polars(df):
             return df
-        if isinstance(df, pd.DataFrame):
+        if _is_pandas(df):
             return pl.from_pandas(df)
-        if hasattr(df, "to_polars"):
-            return df.to_polars()
         raise TypeError(f"Cannot convert {type(df)} to polars")

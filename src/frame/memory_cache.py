@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from frame.logging import get_logger
+from frame.utils import _is_pandas, _is_polars
 
 
 class CacheKey(NamedTuple):
@@ -100,9 +101,9 @@ class MemoryCache:
     @staticmethod
     def _estimate_df_size(df: Any) -> int:
         try:
-            if hasattr(df, "memory_usage"):  # pandas
+            if _is_pandas(df):
                 return int(df.memory_usage(deep=True).sum())
-            if hasattr(df, "estimated_size"):  # polars
+            if _is_polars(df):
                 return df.estimated_size()
         except Exception:
             pass
