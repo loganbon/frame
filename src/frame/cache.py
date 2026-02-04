@@ -200,6 +200,29 @@ class CacheManager:
         """Get all valid dates in a range as a set."""
         return set(self._calendar.dt_range(start, end))
 
+    def _add_date_filter(
+        self,
+        filters: list[tuple[str, str, Any]] | None,
+        dates: set[datetime],
+    ) -> list[tuple[str, str, Any]]:
+        """Add an as_of_date 'in' filter for the given dates.
+
+        Combines with existing filters if present. This enables parquet
+        predicate pushdown to skip row groups that don't contain the
+        requested dates.
+
+        Args:
+            filters: Existing user filters (or None).
+            dates: Set of dates to filter to.
+
+        Returns:
+            New filter list with date filter added.
+        """
+        date_filter = ("as_of_date", "in", list(dates))
+        if filters:
+            return list(filters) + [date_filter]
+        return [date_filter]
+
     def _get_dates_in_df(self, df: Any) -> set[datetime]:
         """Extract unique dates from DataFrame's as_of_date column/index."""
         if self._backend.is_empty(df):
@@ -439,20 +462,24 @@ class CacheManager:
 
             level = "primary" if cache_dir == self._chunk_dir else "parent"
 
-            # Read chunk once, then extract dates from loaded data
-            df = self._backend.read_parquet(chunk_path, columns=columns, filters=filters)
+            # Push date filter to parquet reader for predicate pushdown
+            # This allows skipping row groups that don't contain requested dates
+            filters_with_dates = self._add_date_filter(filters, remaining_dates)
+            df = self._backend.read_parquet(
+                chunk_path, columns=columns, filters=filters_with_dates
+            )
             if self._backend.is_empty(df):
                 self._log.debug("cache_miss_at_level", level=level)
                 continue
 
-            chunk_dates = self._get_dates_in_df(df)
-            found_dates = remaining_dates & chunk_dates
+            # Data is already filtered to remaining_dates by parquet reader
+            # Get the dates that were actually found (subset of remaining_dates)
+            found_dates = self._get_dates_in_df(df)
 
             if found_dates:
                 self._log.debug(
                     "cache_hit_at_level", level=level, found_count=len(found_dates)
                 )
-                df = self._filter_to_dates(df, found_dates)
                 # Filter out sentinel rows before adding to result
                 df_without_sentinels = self._filter_out_sentinels(df)
                 if not self._backend.is_empty(df_without_sentinels):
@@ -983,7 +1010,16 @@ class CacheManager:
         columns: list[str] | None,
         filters: list[tuple] | None,
     ) -> Any:
-        """Read a chunk and filter to specific dates."""
-        df = self.read_chunk(chunk_start, chunk_end, columns=columns, filters=filters)
-        df = self._filter_to_dates(df, dates)
+        """Read a chunk and filter to specific dates.
+
+        Uses parquet predicate pushdown by adding date filter to the query,
+        allowing the parquet reader to skip row groups that don't contain
+        the requested dates.
+        """
+        # Push date filter to parquet reader for predicate pushdown
+        filters_with_dates = self._add_date_filter(filters, dates)
+        df = self.read_chunk(
+            chunk_start, chunk_end, columns=columns, filters=filters_with_dates
+        )
+        # Data is already filtered by parquet reader, just remove sentinels
         return self._filter_out_sentinels(df)

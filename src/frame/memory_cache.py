@@ -93,10 +93,13 @@ class MemoryCache:
         self._log = get_logger(__name__)
 
     def _get_path_lock(self, path: Path) -> threading.RLock:
+        # Fast path: check without lock (dict lookup is atomic in CPython due to GIL)
+        lock = self._path_locks.get(path)
+        if lock is not None:
+            return lock
+        # Slow path: acquire lock and use setdefault to handle race condition
         with self._path_locks_lock:
-            if path not in self._path_locks:
-                self._path_locks[path] = threading.RLock()
-            return self._path_locks[path]
+            return self._path_locks.setdefault(path, threading.RLock())
 
     @staticmethod
     def _estimate_df_size(df: Any) -> int:
@@ -137,17 +140,17 @@ class MemoryCache:
         if not self._config.enabled:
             return None
         key = CacheKey.make(path, columns, filters)
-        path_lock = self._get_path_lock(path)
-        with path_lock:
-            with self._global_lock:
-                if key in self._cache:
-                    self._cache.move_to_end(key)
-                    entry = self._cache[key]
-                    entry.access_count += 1
-                    self._stats.hits += 1
-                    return entry.df
-                self._stats.misses += 1
-                return None
+        # Only global_lock needed - path_lock is redundant since global_lock
+        # already serializes all cache operations
+        with self._global_lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                entry = self._cache[key]
+                entry.access_count += 1
+                self._stats.hits += 1
+                return entry.df
+            self._stats.misses += 1
+            return None
 
     def put(
         self,

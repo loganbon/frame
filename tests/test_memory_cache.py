@@ -204,6 +204,80 @@ class TestMemoryCache:
         assert result is None
         assert cache.get_stats().current_entries == 0
 
+    def test_disabled_cache_does_not_track_stats(self):
+        """Disabled cache does not track hits or misses."""
+        config = CacheConfig(enabled=False)
+        cache = MemoryCache(config)
+        path = Path("/tmp/test.prq")
+        df = pd.DataFrame({"a": [1, 2, 3]})
+
+        # Attempt multiple puts and gets
+        for _ in range(5):
+            cache.put(path, df)
+            cache.get(path)
+
+        stats = cache.get_stats()
+
+        # Stats should remain at zero - cache doesn't track when disabled
+        assert stats.hits == 0
+        assert stats.misses == 0
+        assert stats.evictions == 0
+        assert stats.current_entries == 0
+        assert stats.current_memory_bytes == 0
+
+    def test_enabled_cache_stores_and_retrieves(self):
+        """Enabled cache properly stores and retrieves data with stats tracking."""
+        config = CacheConfig(enabled=True)
+        cache = MemoryCache(config)
+        path = Path("/tmp/test.prq")
+        df = pd.DataFrame({"a": [1, 2, 3]})
+
+        # Put data
+        cache.put(path, df)
+
+        # First get - should hit
+        result1 = cache.get(path)
+        stats1 = cache.get_stats()
+
+        assert result1 is not None
+        pd.testing.assert_frame_equal(result1, df)
+        assert stats1.hits == 1
+        assert stats1.misses == 0
+        assert stats1.current_entries == 1
+        assert stats1.current_memory_bytes > 0
+
+        # Get non-existent - should miss
+        result2 = cache.get(Path("/tmp/nonexistent.prq"))
+        stats2 = cache.get_stats()
+
+        assert result2 is None
+        assert stats2.hits == 1
+        assert stats2.misses == 1
+
+    def test_toggle_cache_enabled(self):
+        """Toggling cache enabled state works correctly."""
+        cache = MemoryCache(CacheConfig(enabled=True))
+        path = Path("/tmp/test.prq")
+        df = pd.DataFrame({"a": [1, 2, 3]})
+
+        # Store while enabled
+        cache.put(path, df)
+        assert cache.get(path) is not None
+        assert cache.get_stats().hits == 1
+
+        # Disable - get should return None even though data is stored
+        cache.configure(enabled=False)
+        assert cache.get(path) is None
+        # Stats should not increment when disabled
+        assert cache.get_stats().hits == 1  # Still 1 from before
+
+        # Re-enable - data should still be there
+        cache.configure(enabled=True)
+        result = cache.get(path)
+        assert result is not None
+        pd.testing.assert_frame_equal(result, df)
+        assert cache.get_stats().hits == 2
+
     def test_stats_tracking(self):
         """Stats correctly track hits, misses, evictions."""
         config = CacheConfig(max_entries=2)
