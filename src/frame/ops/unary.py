@@ -376,3 +376,187 @@ class Filter(Operation):
     def _apply(self, inputs: list[Any], filters: list[tuple]) -> Any:
         df = inputs[0]
         return _apply_filters(df, filters)
+
+
+class Where(Operation):
+    """Replace values where condition is False.
+
+    Similar to pandas DataFrame.where() - keeps values where condition is True,
+    replaces with `other` where condition is False.
+    """
+
+    def __init__(
+        self,
+        frame: "Frame | Operation",
+        cond: "Frame | Operation",
+        other: Any = None,
+    ) -> None:
+        """Initialize Where operation.
+
+        Args:
+            frame: Input Frame or Operation.
+            cond: Boolean condition Frame/Operation. Same shape as frame.
+            other: Value to use where condition is False. Default is NaN.
+        """
+        super().__init__(frame, cond, other=other)
+
+    def _apply(self, inputs: list[Any], other: Any) -> Any:
+        df, cond = inputs[0], inputs[1]
+
+        if _is_polars(df):
+            import polars as pl
+
+            # For polars, use when/then/otherwise
+            if other is None:
+                other = float("nan")
+            # Apply condition column-wise
+            result = df.clone()
+            for col in df.columns:
+                if col in cond.columns:
+                    result = result.with_columns(
+                        pl.when(pl.col(col).is_in(cond[col]))
+                        .then(pl.col(col))
+                        .otherwise(pl.lit(other))
+                        .alias(col)
+                    )
+            return result
+        else:
+            # Pandas where
+            return df.where(cond, other=other)
+
+
+class Mask(Operation):
+    """Replace values where condition is True.
+
+    Similar to pandas DataFrame.mask() - replaces values where condition is True,
+    keeps original values where condition is False.
+    """
+
+    def __init__(
+        self,
+        frame: "Frame | Operation",
+        cond: "Frame | Operation",
+        other: Any = None,
+    ) -> None:
+        """Initialize Mask operation.
+
+        Args:
+            frame: Input Frame or Operation.
+            cond: Boolean condition Frame/Operation. Same shape as frame.
+            other: Value to use where condition is True. Default is NaN.
+        """
+        super().__init__(frame, cond, other=other)
+
+    def _apply(self, inputs: list[Any], other: Any) -> Any:
+        df, cond = inputs[0], inputs[1]
+
+        if _is_polars(df):
+            import polars as pl
+
+            # For polars, use when/then/otherwise (inverted from Where)
+            if other is None:
+                other = float("nan")
+            result = df.clone()
+            for col in df.columns:
+                if col in cond.columns:
+                    result = result.with_columns(
+                        pl.when(pl.col(col).is_in(cond[col]))
+                        .then(pl.lit(other))
+                        .otherwise(pl.col(col))
+                        .alias(col)
+                    )
+            return result
+        else:
+            # Pandas mask
+            return df.mask(cond, other=other)
+
+
+class Dropna(Operation):
+    """Remove rows with missing values."""
+
+    def __init__(
+        self,
+        frame: "Frame | Operation",
+        how: str = "any",
+    ) -> None:
+        """Initialize Dropna operation.
+
+        Args:
+            frame: Input Frame or Operation.
+            how: Determine when to drop row:
+                - "any": Drop row if any value is NA
+                - "all": Drop row if all values are NA
+        """
+        if how not in ("any", "all"):
+            raise ValueError(f"how must be 'any' or 'all', got {how}")
+        super().__init__(frame, how=how)
+
+    def _apply(self, inputs: list[Any], how: str) -> Any:
+        df = inputs[0]
+
+        if _is_polars(df):
+            import polars as pl
+
+            if how == "any":
+                # Drop rows where any column has null
+                mask = pl.lit(True)
+                for col in df.columns:
+                    mask = mask & pl.col(col).is_not_null()
+                return df.filter(mask)
+            else:
+                # Drop rows where all columns are null
+                mask = pl.lit(False)
+                for col in df.columns:
+                    mask = mask | pl.col(col).is_not_null()
+                return df.filter(mask)
+        else:
+            # Pandas dropna
+            return df.dropna(how=how)
+
+
+class Rename(Operation):
+    """Rename columns."""
+
+    def __init__(
+        self,
+        frame: "Frame | Operation",
+        mapping: dict[str, str],
+    ) -> None:
+        """Initialize Rename operation.
+
+        Args:
+            frame: Input Frame or Operation.
+            mapping: Dictionary mapping old column names to new names.
+        """
+        super().__init__(frame, mapping=mapping)
+
+    def _apply(self, inputs: list[Any], mapping: dict[str, str]) -> Any:
+        df = inputs[0]
+
+        if _is_polars(df):
+            return df.rename(mapping)
+        else:
+            # Pandas rename
+            return df.rename(columns=mapping)
+
+
+class Apply(Operation):
+    """Apply a custom function to the DataFrame."""
+
+    def __init__(
+        self,
+        frame: "Frame | Operation",
+        func: Any,
+    ) -> None:
+        """Initialize Apply operation.
+
+        Args:
+            frame: Input Frame or Operation.
+            func: Function to apply to the DataFrame. Should take a DataFrame
+                and return a DataFrame.
+        """
+        super().__init__(frame, func=func)
+
+    def _apply(self, inputs: list[Any], func: Any) -> Any:
+        df = inputs[0]
+        return func(df)

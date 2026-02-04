@@ -1,6 +1,6 @@
 """Mixin classes for shared Frame/Operation functionality."""
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 if TYPE_CHECKING:
     from frame.calendar import Calendar
@@ -247,6 +247,55 @@ class APIMixin:
 
         return AlignTo(self, target, fill_method=fill_method)
 
+    # Join operations
+    def join(
+        self,
+        other: "Frame",
+        on: str | list[str] | None = None,
+        how: Literal["inner", "left", "right", "outer"] = "left",
+        suffix: tuple[str, str] = ("_left", "_right"),
+    ) -> "Frame":
+        """Join two Frames on specified keys.
+
+        Args:
+            other: Right Frame to join with.
+            on: Join key(s). None for (as_of_date, id), or "id", "as_of_date", or list.
+            how: Join type - "inner", "left", "right", or "outer".
+            suffix: Tuple of suffixes for overlapping column names.
+
+        Returns:
+            Frame with joined data.
+        """
+        from frame.ops.join import Join
+
+        return Join(self, other, on=on, how=how, suffix=suffix)
+
+    def asof_join(
+        self,
+        other: "Frame",
+        on: str = "as_of_date",
+        by: str | list[str] | None = "id",
+        tolerance: str | None = None,
+    ) -> "Frame":
+        """Point-in-time (as-of) join on nearest prior date.
+
+        Joins this frame to the other frame by finding the most recent
+        row in the other frame that is on or before this frame's date.
+        Useful for joining time-series data to slowly-changing data.
+
+        Args:
+            other: Right Frame to join with.
+            on: Column to match on (typically date column). Default "as_of_date".
+            by: Column(s) to group by before matching. Default "id".
+            tolerance: Maximum time tolerance for matching (e.g., "7d").
+
+        Returns:
+            Frame with as-of joined data.
+        """
+        from frame.ops.join import AsofJoin
+
+        return AsofJoin(self, other, on=on, by=by, tolerance=tolerance)
+
     # Binary operations
     def add(self, other: Any) -> "Frame":
         """Add another Frame or scalar.
@@ -360,6 +409,215 @@ class APIMixin:
         raise NotImplementedError(
             "Scalar ** Frame is not supported. Use frame.pow(scalar) instead."
         )
+
+    # Cross-sectional operations
+    def cs_rank(self) -> "Frame":
+        """Cross-sectional percentile rank (0-1) across ids per date.
+
+        Ranks values within each date, returning percentile ranks in [0, 1].
+
+        Returns:
+            Frame with cross-sectional rank transformation applied.
+        """
+        from frame.ops.cross_sectional import CsRank
+
+        return CsRank(self)
+
+    def cs_zscore(self) -> "Frame":
+        """Cross-sectional z-score (standardize across ids per date).
+
+        Computes z-score as (x - mean) / std within each date.
+
+        Returns:
+            Frame with cross-sectional z-score transformation applied.
+        """
+        from frame.ops.cross_sectional import CsZscore
+
+        return CsZscore(self)
+
+    def cs_demean(self) -> "Frame":
+        """Cross-sectional demean (subtract mean across ids per date).
+
+        Subtracts the cross-sectional mean from each value within each date.
+
+        Returns:
+            Frame with cross-sectional demean transformation applied.
+        """
+        from frame.ops.cross_sectional import CsDemean
+
+        return CsDemean(self)
+
+    def cs_winsorize(self, lower: float = 0.01, upper: float = 0.99) -> "Frame":
+        """Cross-sectional winsorization (clip to percentiles across ids per date).
+
+        Clips values to the specified percentiles within each date.
+
+        Args:
+            lower: Lower percentile (0-1). Values below are capped.
+            upper: Upper percentile (0-1). Values above are capped.
+
+        Returns:
+            Frame with cross-sectional winsorization applied.
+        """
+        from frame.ops.cross_sectional import CsWinsorize
+
+        return CsWinsorize(self, lower=lower, upper=upper)
+
+    # Time series operations
+    def ewm(self, span: float, func: str = "mean") -> "Frame":
+        """Exponentially weighted moving operation.
+
+        Args:
+            span: Decay factor as span (larger = slower decay).
+            func: Function to apply - "mean", "std", or "var".
+
+        Returns:
+            Frame with EWM transformation applied.
+        """
+        from frame.ops.timeseries import Ewm
+
+        return Ewm(self, span=span, func=func)
+
+    def expanding(self, func: str = "mean", min_periods: int = 1) -> "Frame":
+        """Expanding window operation from start.
+
+        Args:
+            func: Function to apply - "mean", "sum", "std", "min", "max", etc.
+            min_periods: Minimum observations required.
+
+        Returns:
+            Frame with expanding window transformation applied.
+        """
+        from frame.ops.timeseries import Expanding
+
+        return Expanding(self, func=func, min_periods=min_periods)
+
+    def cumsum(self) -> "Frame":
+        """Cumulative sum.
+
+        Returns:
+            Frame with cumulative sum transformation applied.
+        """
+        from frame.ops.timeseries import Cumsum
+
+        return Cumsum(self)
+
+    def cumprod(self) -> "Frame":
+        """Cumulative product.
+
+        Returns:
+            Frame with cumulative product transformation applied.
+        """
+        from frame.ops.timeseries import Cumprod
+
+        return Cumprod(self)
+
+    def cummax(self) -> "Frame":
+        """Cumulative maximum.
+
+        Returns:
+            Frame with cumulative maximum transformation applied.
+        """
+        from frame.ops.timeseries import Cummax
+
+        return Cummax(self)
+
+    def cummin(self) -> "Frame":
+        """Cumulative minimum.
+
+        Returns:
+            Frame with cumulative minimum transformation applied.
+        """
+        from frame.ops.timeseries import Cummin
+
+        return Cummin(self)
+
+    def resample(self, freq: str, func: str = "last") -> "Frame":
+        """Resample to a different frequency.
+
+        Args:
+            freq: Target frequency - "W" (weekly), "M" (monthly), "Q" (quarterly), etc.
+            func: Aggregation function - "last", "first", "mean", "sum", "min", "max".
+
+        Returns:
+            Frame resampled to the target frequency.
+        """
+        from frame.ops.timeseries import Resample
+
+        return Resample(self, freq=freq, func=func)
+
+    # Conditional operations
+    def where(self, cond: "Frame", other: Any = None) -> "Frame":
+        """Replace values where condition is False.
+
+        Keeps values where cond is True, replaces with other where False.
+
+        Args:
+            cond: Boolean condition Frame. Same shape as self.
+            other: Value to use where condition is False. Default is NaN.
+
+        Returns:
+            Frame with conditional replacement applied.
+        """
+        from frame.ops.unary import Where
+
+        return Where(self, cond, other=other)
+
+    def mask(self, cond: "Frame", other: Any = None) -> "Frame":
+        """Replace values where condition is True.
+
+        Replaces values where cond is True, keeps original where False.
+
+        Args:
+            cond: Boolean condition Frame. Same shape as self.
+            other: Value to use where condition is True. Default is NaN.
+
+        Returns:
+            Frame with conditional masking applied.
+        """
+        from frame.ops.unary import Mask
+
+        return Mask(self, cond, other=other)
+
+    def dropna(self, how: str = "any") -> "Frame":
+        """Remove rows with missing values.
+
+        Args:
+            how: When to drop row - "any" (if any NA) or "all" (if all NA).
+
+        Returns:
+            Frame with NA rows removed.
+        """
+        from frame.ops.unary import Dropna
+
+        return Dropna(self, how=how)
+
+    # Utility operations
+    def rename(self, mapping: dict[str, str]) -> "Frame":
+        """Rename columns.
+
+        Args:
+            mapping: Dictionary mapping old column names to new names.
+
+        Returns:
+            Frame with renamed columns.
+        """
+        from frame.ops.unary import Rename
+
+        return Rename(self, mapping=mapping)
+
+    def apply(self, func: Callable) -> "Frame":
+        """Apply a custom function to the DataFrame.
+
+        Args:
+            func: Function to apply. Should take a DataFrame and return a DataFrame.
+
+        Returns:
+            Frame with custom function applied.
+        """
+        from frame.ops.unary import Apply
+
+        return Apply(self, func=func)
 
     # Backend conversion
     def to_backend(self, backend: str) -> "Frame":

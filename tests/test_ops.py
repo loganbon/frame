@@ -9,23 +9,28 @@ import pytest
 from frame import (
     Abs,
     Add,
+    Apply,
     Clip,
     Diff,
     Div,
+    Dropna,
     Fillna,
     Filter,
     Frame,
     LazyFrame,
+    Mask,
     Mul,
     Operation,
     Pct,
     Pow,
+    Rename,
     Rolling,
     Select,
     Shift,
     Sub,
     ToPandas,
     ToPolars,
+    Where,
     Winsorize,
     Zscore,
 )
@@ -1587,3 +1592,286 @@ class TestOperationCacheMode:
         # Check filters
         ids = result.index.get_level_values("id").unique().tolist()
         assert set(ids) == {"A", "B"}
+
+
+class TestWhereOperation:
+    """Test Where operation."""
+
+    def test_where_basic(self, cache_dir):
+        """Test Where replaces values where condition is False."""
+        def fetch_values(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [10.0, 20.0, 30.0],
+            }).set_index(["as_of_date", "id"])
+
+        def fetch_cond(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [True, False, True],
+            }).set_index(["as_of_date", "id"])
+
+        values_frame = Frame(fetch_values, cache_dir=cache_dir / "values")
+        cond_frame = Frame(fetch_cond, cache_dir=cache_dir / "cond")
+
+        result = Where(values_frame, cond_frame, other=0.0).get_range(
+            datetime(2024, 1, 1), datetime(2024, 1, 1)
+        )
+
+        # id=0: True -> 10, id=1: False -> 0, id=2: True -> 30
+        assert result.loc[(slice(None), 0), "value"].iloc[0] == 10.0
+        assert result.loc[(slice(None), 1), "value"].iloc[0] == 0.0
+        assert result.loc[(slice(None), 2), "value"].iloc[0] == 30.0
+
+    def test_where_fluent_api(self, cache_dir):
+        """Test Frame.where() fluent method."""
+        def fetch_values(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [10.0, 20.0, 30.0],
+            }).set_index(["as_of_date", "id"])
+
+        def fetch_cond(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [True, True, False],
+            }).set_index(["as_of_date", "id"])
+
+        values_frame = Frame(fetch_values, cache_dir=cache_dir / "values")
+        cond_frame = Frame(fetch_cond, cache_dir=cache_dir / "cond")
+
+        result = values_frame.where(cond_frame, other=-1.0).get_range(
+            datetime(2024, 1, 1), datetime(2024, 1, 1)
+        )
+
+        assert result.loc[(slice(None), 2), "value"].iloc[0] == -1.0
+
+
+class TestMaskOperation:
+    """Test Mask operation."""
+
+    def test_mask_basic(self, cache_dir):
+        """Test Mask replaces values where condition is True."""
+        def fetch_values(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [10.0, 20.0, 30.0],
+            }).set_index(["as_of_date", "id"])
+
+        def fetch_cond(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [True, False, True],
+            }).set_index(["as_of_date", "id"])
+
+        values_frame = Frame(fetch_values, cache_dir=cache_dir / "values")
+        cond_frame = Frame(fetch_cond, cache_dir=cache_dir / "cond")
+
+        result = Mask(values_frame, cond_frame, other=0.0).get_range(
+            datetime(2024, 1, 1), datetime(2024, 1, 1)
+        )
+
+        # id=0: True -> 0 (masked), id=1: False -> 20 (kept), id=2: True -> 0 (masked)
+        assert result.loc[(slice(None), 0), "value"].iloc[0] == 0.0
+        assert result.loc[(slice(None), 1), "value"].iloc[0] == 20.0
+        assert result.loc[(slice(None), 2), "value"].iloc[0] == 0.0
+
+    def test_mask_fluent_api(self, cache_dir):
+        """Test Frame.mask() fluent method."""
+        def fetch_values(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [10.0, 20.0, 30.0],
+            }).set_index(["as_of_date", "id"])
+
+        def fetch_cond(start_dt, end_dt):
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [False, True, False],
+            }).set_index(["as_of_date", "id"])
+
+        values_frame = Frame(fetch_values, cache_dir=cache_dir / "values")
+        cond_frame = Frame(fetch_cond, cache_dir=cache_dir / "cond")
+
+        result = values_frame.mask(cond_frame, other=-1.0).get_range(
+            datetime(2024, 1, 1), datetime(2024, 1, 1)
+        )
+
+        assert result.loc[(slice(None), 1), "value"].iloc[0] == -1.0
+
+
+class TestDropnaOperation:
+    """Test Dropna operation."""
+
+    def test_dropna_any(self, cache_dir):
+        """Test Dropna with how='any'."""
+        def fetch_with_na(start_dt, end_dt):
+            import numpy as np
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [10.0, np.nan, 30.0],
+                "other": [1.0, 2.0, 3.0],
+            }).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_with_na, cache_dir=cache_dir)
+        result = Dropna(frame, how="any").get_range(
+            datetime(2024, 1, 1), datetime(2024, 1, 1)
+        )
+
+        # Row with id=1 should be dropped (has NaN in value)
+        ids = result.index.get_level_values("id").tolist()
+        assert 1 not in ids
+        assert len(ids) == 2
+
+    def test_dropna_all(self, cache_dir):
+        """Test Dropna with how='all'."""
+        def fetch_with_na(start_dt, end_dt):
+            import numpy as np
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [10.0, np.nan, np.nan],
+                "other": [1.0, np.nan, 3.0],  # id=1 has all NaN
+            }).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_with_na, cache_dir=cache_dir)
+        result = Dropna(frame, how="all").get_range(
+            datetime(2024, 1, 1), datetime(2024, 1, 1)
+        )
+
+        # Only row with id=1 should be dropped (all values are NaN)
+        ids = result.index.get_level_values("id").tolist()
+        assert 1 not in ids
+        assert 0 in ids
+        assert 2 in ids
+
+    def test_dropna_invalid_how(self, prices_frame):
+        """Test Dropna with invalid how raises error."""
+        with pytest.raises(ValueError, match="how must be"):
+            Dropna(prices_frame, how="invalid")
+
+    def test_dropna_fluent_api(self, cache_dir):
+        """Test Frame.dropna() fluent method."""
+        def fetch_with_na(start_dt, end_dt):
+            import numpy as np
+            return pd.DataFrame({
+                "as_of_date": [start_dt] * 3,
+                "id": [0, 1, 2],
+                "value": [10.0, np.nan, 30.0],
+            }).set_index(["as_of_date", "id"])
+
+        frame = Frame(fetch_with_na, cache_dir=cache_dir)
+        result = frame.dropna().get_range(datetime(2024, 1, 1), datetime(2024, 1, 1))
+
+        ids = result.index.get_level_values("id").tolist()
+        assert 1 not in ids
+
+
+class TestRenameOperation:
+    """Test Rename operation."""
+
+    def test_rename_basic(self, prices_frame):
+        """Test basic column rename."""
+        renamed = Rename(prices_frame, mapping={"value": "new_value"})
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        result = renamed.get_range(start, end)
+
+        assert "new_value" in result.columns
+        assert "value" not in result.columns
+        assert "price" in result.columns  # Unchanged
+
+    def test_rename_multiple_columns(self, prices_frame):
+        """Test renaming multiple columns."""
+        renamed = Rename(prices_frame, mapping={"value": "val", "price": "prc"})
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        result = renamed.get_range(start, end)
+
+        assert "val" in result.columns
+        assert "prc" in result.columns
+        assert "value" not in result.columns
+        assert "price" not in result.columns
+
+    def test_rename_fluent_api(self, prices_frame):
+        """Test Frame.rename() fluent method."""
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        result = prices_frame.rename({"value": "renamed_value"}).get_range(start, end)
+
+        assert "renamed_value" in result.columns
+        assert "value" not in result.columns
+
+
+class TestApplyOperation:
+    """Test Apply operation."""
+
+    def test_apply_basic(self, prices_frame):
+        """Test basic apply with custom function."""
+        def double_values(df):
+            result = df.copy()
+            result["value"] = df["value"] * 2
+            return result
+
+        applied = Apply(prices_frame, func=double_values)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        original = prices_frame.get_range(start, end)
+        result = applied.get_range(start, end)
+
+        assert (result["value"] == original["value"] * 2).all()
+
+    def test_apply_add_column(self, prices_frame):
+        """Test apply that adds a new column."""
+        def add_ratio(df):
+            result = df.copy()
+            result["ratio"] = df["value"] / df["price"]
+            return result
+
+        applied = Apply(prices_frame, func=add_ratio)
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        result = applied.get_range(start, end)
+
+        assert "ratio" in result.columns
+        assert "value" in result.columns
+        assert "price" in result.columns
+
+    def test_apply_fluent_api(self, prices_frame):
+        """Test Frame.apply() fluent method."""
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 5)
+
+        result = prices_frame.apply(lambda df: df * 2).get_range(start, end)
+
+        original = prices_frame.get_range(start, end)
+        assert (result["value"] == original["value"] * 2).all()
+
+    def test_apply_chained(self, prices_frame):
+        """Test chaining apply with other operations."""
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 10)
+
+        result = (
+            prices_frame
+            .rolling(window=3)
+            .apply(lambda df: df.fillna(0))
+            .get_range(start, end)
+        )
+
+        assert isinstance(result, pd.DataFrame)
+        assert result["value"].isna().sum() == 0
