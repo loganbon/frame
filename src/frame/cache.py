@@ -26,8 +26,8 @@ class ChunkResult(NamedTuple):
     chunk_start: datetime
     chunk_end: datetime
     df: Any
-    missing_dates: set[date]
-    requested_dates: set[date]
+    missing_dates: set[datetime]
+    requested_dates: set[datetime]
 
 
 class CacheMissError(Exception):
@@ -194,11 +194,11 @@ class CacheManager:
         else:
             raise ValueError(f"Unknown chunk granularity: {self._chunk_by}")
 
-    def _dates_in_range(self, start: datetime, end: datetime) -> set[date]:
+    def _dates_in_range(self, start: datetime, end: datetime) -> set[datetime]:
         """Get all valid dates in a range as a set."""
         return set(self._calendar.dt_range(start, end))
 
-    def _get_dates_in_df(self, df: Any) -> set[date]:
+    def _get_dates_in_df(self, df: Any) -> set[datetime]:
         """Extract unique dates from DataFrame's as_of_date column/index."""
         if self._backend.is_empty(df):
             return set()
@@ -209,7 +209,7 @@ class CacheManager:
             if hasattr(df, "index") and hasattr(df.index, "names"):
                 if "as_of_date" in df.index.names:
                     dates = df.index.get_level_values("as_of_date")
-                    return {d.date() if hasattr(d, "date") else d for d in dates.unique()}
+                    return {d for d in dates.unique()}
             # Polars path: as_of_date as column
             if hasattr(df, "columns") and "as_of_date" in (
                 df.columns if hasattr(df.columns, "__iter__") else []
@@ -217,13 +217,13 @@ class CacheManager:
                 unique_dates = df["as_of_date"].unique()
                 if hasattr(unique_dates, "to_list"):
                     unique_dates = unique_dates.to_list()
-                return {d.date() if hasattr(d, "date") else d for d in unique_dates}
+                return {d for d in unique_dates}
         except Exception:
             pass
 
         return set()
 
-    def _filter_to_dates(self, df: Any, dates: set[date]) -> Any:
+    def _filter_to_dates(self, df: Any, dates: set[datetime]) -> Any:
         """Filter DataFrame to only include rows with dates in the given set."""
         if self._backend.is_empty(df):
             return df
@@ -234,10 +234,8 @@ class CacheManager:
                 import pandas as pd
 
                 idx_dates = df.index.get_level_values("as_of_date")
-                mask = pd.Series(
-                    [d.date() if hasattr(d, "date") else d for d in idx_dates]
-                ).isin(dates)
-                return df[mask.values]
+                mask = idx_dates.isin(dates)
+                return df[mask]
 
         # Handle polars (column)
         if hasattr(df, "columns") and "as_of_date" in (
@@ -250,7 +248,7 @@ class CacheManager:
 
         return df
 
-    def _filter_out_dates(self, df: Any, dates: set[date]) -> Any:
+    def _filter_out_dates(self, df: Any, dates: set[datetime]) -> Any:
         """Filter DataFrame to exclude rows with dates in the given set."""
         if self._backend.is_empty(df) or not dates:
             return df
@@ -261,10 +259,8 @@ class CacheManager:
                 import pandas as pd
 
                 idx_dates = df.index.get_level_values("as_of_date")
-                mask = pd.Series(
-                    [d.date() if hasattr(d, "date") else d for d in idx_dates]
-                ).isin(dates)
-                return df[~mask.values]
+                mask = idx_dates.isin(dates)
+                return df[~mask]
 
         # Handle polars (column)
         if hasattr(df, "columns") and "as_of_date" in (
@@ -281,10 +277,10 @@ class CacheManager:
         self,
         chunk_start: datetime,
         chunk_end: datetime,
-        requested_dates: set[date],
+        requested_dates: set[datetime],
         columns: list[str] | None,
         filters: list[tuple] | None,
-    ) -> tuple[Any, set[date]]:
+    ) -> tuple[Any, set[datetime]]:
         """
         Resolve chunk data across cache hierarchy, tracking which dates are found.
 
@@ -727,7 +723,7 @@ class CacheManager:
 
         if chunks_needing_fetch:
             if cache_mode == "r":
-                all_missing: set[date] = set()
+                all_missing: set[datetime] = set()
                 for r in chunks_needing_fetch:
                     all_missing.update(r.missing_dates)
                 raise CacheMissError(
@@ -819,7 +815,7 @@ class CacheManager:
         self,
         chunk_start: datetime,
         chunk_end: datetime,
-        dates: set[date],
+        dates: set[datetime],
         columns: list[str] | None,
         filters: list[tuple] | None,
     ) -> Any:

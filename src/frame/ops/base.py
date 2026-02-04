@@ -7,19 +7,20 @@ import json
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from frame.cache import CacheMode, ChunkBy
 from frame.core import Frame
 from frame.executor import execute_with_batching, execute_with_batching_async, get_current_batch
 
-if TYPE_CHECKING:
-    pass
-
 
 def _is_polars(df: Any) -> bool:
-    """Check if df is a polars DataFrame."""
-    return hasattr(df, "lazy") and hasattr(df, "collect")
+    """Check if df is a polars DataFrame or LazyFrame."""
+    try:
+        import polars as pl
+        return isinstance(df, (pl.DataFrame, pl.LazyFrame))
+    except ImportError:
+        return False
 
 
 def _is_pandas(df: Any) -> bool:
@@ -112,6 +113,8 @@ class Operation(Frame):
         self._inputs = inputs
         self._params = params
         self._backend = inputs[0]._backend if inputs else None
+        # Compute and store cache key eagerly (like Frame does)
+        self._cache_key = self._compute_cache_key()
 
     def get_range(
         self,
@@ -320,13 +323,6 @@ class Operation(Frame):
         }
         key_str = json.dumps(key_data, sort_keys=True, default=str)
         return hashlib.sha256(key_str.encode()).hexdigest()[:16]
-
-    @property
-    def _cache_key(self) -> str:
-        """Stable cache key for this operation."""
-        if not hasattr(self, "_cached_cache_key"):
-            self._cached_cache_key = self._compute_cache_key()
-        return self._cached_cache_key
 
     def _serialize_params(self, params: dict[str, Any]) -> dict[str, Any]:
         """Serialize params to JSON-compatible format."""

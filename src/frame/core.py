@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from typing import Any, Callable, Literal
 
 from frame.backends.pandas import PandasBackend
 from frame.backends.polars import PolarsBackend
@@ -17,9 +17,6 @@ from frame.executor import (
 from frame.logging import get_logger
 from frame.mixins import APIMixin
 from frame.proxy import LazyFrame
-
-if TYPE_CHECKING:
-    pass
 
 
 class Frame(APIMixin):

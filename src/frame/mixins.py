@@ -3,6 +3,7 @@
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from frame.calendar import Calendar
     from frame.core import Frame
 
 
@@ -40,6 +41,24 @@ class APIMixin:
         from frame.ops.unary import Shift
 
         return Shift(self, periods=periods)
+
+    def dt_shift(self, periods: int = 1) -> "Frame":
+        """Shift date range to return data from N periods back.
+
+        Fetches data from N periods ago and re-labels it with the
+        requested dates. Useful for getting lagged data without
+        null values at the start of the range.
+
+        Args:
+            periods: Number of periods to shift backward. Positive values
+                return past data, negative values return future data.
+
+        Returns:
+            Frame returning data shifted by N periods.
+        """
+        from frame.ops.dtshift import DtShift
+
+        return DtShift(self, periods=periods)
 
     def diff(self, periods: int = 1) -> "Frame":
         """Apply difference operation.
@@ -174,6 +193,59 @@ class APIMixin:
         from frame.ops.unary import Fillna
 
         return Fillna(self, value=value, method=method)
+
+    # Alignment operations
+    def align_to_calendar(
+        self,
+        calendar: "Calendar",
+        fill_method: str | float | int | None = "ffill",
+    ) -> "Frame":
+        """Align data to a target calendar.
+
+        Reindexes the data to match dates from the target calendar, using the
+        input data's date range (min/max dates). Missing values can be filled
+        using forward fill, backward fill, a scalar value, or left as NaN.
+
+        Args:
+            calendar: Target calendar to align to.
+            fill_method: How to fill missing values:
+                - "ffill": Forward fill (use last available value)
+                - "bfill": Backward fill (use next available value)
+                - None: Leave as NaN/null
+                - float/int: Fill with constant value
+
+        Returns:
+            Frame aligned to the target calendar.
+        """
+        from frame.ops.align import AlignToCalendar
+
+        return AlignToCalendar(self, calendar=calendar, fill_method=fill_method)
+
+    def align_to(
+        self,
+        target: "Frame",
+        fill_method: str | float | int | None = "ffill",
+    ) -> "Frame":
+        """Align data to match another Frame's dates/ids.
+
+        Reindexes the data to match the target Frame's index (date/id
+        combinations). Missing values can be filled using forward fill,
+        backward fill, a scalar value, or left as NaN.
+
+        Args:
+            target: Target Frame whose dates/ids to align to.
+            fill_method: How to fill missing values:
+                - "ffill": Forward fill (use last available value)
+                - "bfill": Backward fill (use next available value)
+                - None: Leave as NaN/null
+                - float/int: Fill with constant value
+
+        Returns:
+            Frame aligned to the target Frame's dates/ids.
+        """
+        from frame.ops.align import AlignTo
+
+        return AlignTo(self, target, fill_method=fill_method)
 
     # Binary operations
     def add(self, other: Any) -> "Frame":

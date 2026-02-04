@@ -9,7 +9,7 @@ class Calendar(ABC):
     """Abstract base class for calendars."""
 
     @abstractmethod
-    def dt_range(self, start_dt: datetime, end_dt: datetime) -> Iterator[date]:
+    def dt_range(self, start_dt: datetime, end_dt: datetime) -> Iterator[datetime]:
         """Generate valid dates in range [start_dt, end_dt]."""
         pass
 
@@ -22,10 +22,9 @@ class Calendar(ABC):
 class DateCalendar(Calendar):
     """Calendar that includes all dates."""
 
-    def dt_range(self, start_dt: datetime, end_dt: datetime) -> Iterator[date]:
-        current = start_dt.date()
-        end_date = end_dt.date()
-        while current <= end_date:
+    def dt_range(self, start_dt: datetime, end_dt: datetime) -> Iterator[datetime]:
+        current = start_dt
+        while current <= end_dt:
             yield current
             current += timedelta(days=1)
 
@@ -36,10 +35,9 @@ class DateCalendar(Calendar):
 class BDateCalendar(Calendar):
     """Business date calendar - excludes weekends (Sat/Sun)."""
 
-    def dt_range(self, start_dt: datetime, end_dt: datetime) -> Iterator[date]:
-        current = start_dt.date()
-        end_date = end_dt.date()
-        while current <= end_date:
+    def dt_range(self, start_dt: datetime, end_dt: datetime) -> Iterator[datetime]:
+        current = start_dt
+        while current <= end_dt:
             if current.weekday() < 5:  # Mon-Fri = 0-4
                 yield current
             current += timedelta(days=1)
