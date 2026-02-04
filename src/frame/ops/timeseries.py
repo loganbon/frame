@@ -41,6 +41,8 @@ class Ewm(Operation):
                 return df.with_columns(pl.all().ewm_std(alpha=alpha))
             elif func == "var":
                 return df.with_columns(pl.all().ewm_var(alpha=alpha))
+            else:
+                raise ValueError(f"Unknown ewm function: {func}")
         else:
             # Pandas with MultiIndex [as_of_date, id] - group by id level
             ewm = df.groupby(level="id", group_keys=False).apply(

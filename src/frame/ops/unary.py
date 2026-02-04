@@ -44,14 +44,18 @@ class Rolling(Operation):
         if _is_polars(df):
             import polars as pl
 
-            return df.with_columns(
-                pl.all().rolling_mean(window) if func == "mean"
-                else pl.all().rolling_sum(window) if func == "sum"
-                else pl.all().rolling_std(window) if func == "std"
-                else pl.all().rolling_min(window) if func == "min"
-                else pl.all().rolling_max(window) if func == "max"
-                else pl.all()
-            )
+            if func == "mean":
+                return df.with_columns(pl.all().rolling_mean(window))
+            elif func == "sum":
+                return df.with_columns(pl.all().rolling_sum(window))
+            elif func == "std":
+                return df.with_columns(pl.all().rolling_std(window))
+            elif func == "min":
+                return df.with_columns(pl.all().rolling_min(window))
+            elif func == "max":
+                return df.with_columns(pl.all().rolling_max(window))
+            else:
+                raise ValueError(f"Unknown rolling function for polars: {func}")
         else:
             # Pandas with MultiIndex [as_of_date, id] - group by id level
             rolling = df.groupby(level="id", group_keys=False).rolling(
@@ -350,14 +354,16 @@ class Fillna(Operation):
                 return df.fill_null(strategy="forward")
             elif method == "bfill":
                 return df.fill_null(strategy="backward")
+            else:
+                raise ValueError(f"Unknown fill method: {method}")
         else:
             # Pandas with MultiIndex [as_of_date, id] - group by id level
             if method == "ffill":
                 return df.groupby(level="id", group_keys=False).ffill()
             elif method == "bfill":
                 return df.groupby(level="id", group_keys=False).bfill()
-
-        return df
+            else:
+                raise ValueError(f"Unknown fill method: {method}")
 
 
 class Filter(Operation):
